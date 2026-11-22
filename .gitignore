@@ -1,0 +1,22 @@
+# Data: the raw file is 179 MB and exceeds GitHub's 100 MB limit.
+# Run `python src/download_data.py` to fetch it.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS and editors
+.DS_Store
+.vscode/
+.idea/
+
+# Working files
+PROJECT_BRIEF.md
+reports/~$*

@@ -1,0 +1,28 @@
+group,check,before,after,change
+Size,Rows,899164.0,895952.0,-3212.0
+Size,Columns,27.0,35.0,8.0
+Missing,Missing cells (original 27 columns),751248.0,736160.0,-15088.0
+Missing,Missing cells (% of original cells),3.094,3.043,-0.05099999999999971
+Missing,Missing cells excluding ChgOffDate,14783.0,2454.0,-12329.0
+Missing,Rows with unknown MIS_Status,1997.0,0.0,-1997.0
+Format,Numeric or date columns stored as text,9.0,0.0,-9.0
+Invalid codes,RevLineCr: values outside the code list,272951.0,0.0,-272951.0
+Invalid codes,LowDoc: values outside the code list,3425.0,0.0,-3425.0
+Invalid codes,NewExist: values outside the code list,1034.0,0.0,-1034.0
+Invalid codes,UrbanRural: values outside the code list,323167.0,0.0,-323167.0
+Invalid codes,ApprovalFY: non-numeric values,18.0,0.0,-18.0
+Impossible values,NoEmp equal to placeholder 9999,4.0,0.0,-4.0
+Impossible values,Term equal to 0 months,810.0,0.0,-810.0
+Impossible values,Zip equal to 0,283.0,0.0,-283.0
+Impossible values,SBA_Appv above GrAppv,0.0,0.0,0.0
+Impossible values,DisbursementGross equal to 0,196.0,0.0,-196.0
+Impossible values,Dates outside 1960-2014,4.0,0.0,-4.0
+Extreme values,NoEmp above 99.9th percentile (300),885.0,0.0,-885.0
+Extreme values,CreateJob above 99.9th percentile (200),870.0,0.0,-870.0
+Extreme values,RetainedJob above 99.9th percentile (280),894.0,0.0,-894.0
+Logical,Disbursed over 30 days before approval,135.0,133.0,-2.0
+Logical,Paid in full but ChgOffDate present,4927.0,4922.0,-5.0
+Logical,Charged off but ChgOffDate missing,47.0,48.0,1.0
+Duplicates,Exact duplicate rows,0.0,0.0,0.0
+Duplicates,Duplicate rows ignoring LoanNr_ChkDgt,128.0,0.0,-128.0
+Duplicates,"Near-duplicates (Name, City, State, ApprovalDate, GrAppv)",1266.0,0.0,-1266.0

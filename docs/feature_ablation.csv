@@ -1,0 +1,6 @@
+model,n_input_columns,roc_auc,pr_auc,fit_seconds,roc_auc_gain,pr_auc_gain
+A. Raw cleaned columns,16,0.9778,0.91389,10.05735,0.0,0.0
+B. Raw plus engineered,34,0.98088,0.92502,20.64428,0.00308,0.01113
+C. Final feature set,26,0.9806,0.92305,16.46627,0.00279,0.00917
+D. C with RevLineCr as cleaned,26,0.98045,0.9227,15.56458,0.00264,0.00881
+E. C without bank encodings,25,0.9789,0.91615,17.86986,0.0011,0.00226

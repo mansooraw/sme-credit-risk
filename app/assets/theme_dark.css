@@ -1,0 +1,46 @@
+/* CreditLens dark mode: injected after theme.css when the sidebar toggle is on (app/experience.py) */
+:root {
+  --cl-bg: #0A1628;
+  --cl-card: #10253F;
+  --cl-border: #26405F;
+  --cl-ink: #E6EDF6;
+  --cl-muted: #9FB0C6;
+  --cl-faint: #7286A0;
+  --cl-teal-soft: rgba(42, 157, 143, 0.16);
+  --cl-amber-soft: rgba(233, 196, 106, 0.14);
+  --cl-coral-soft: rgba(231, 111, 81, 0.16);
+  --cl-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background: var(--cl-bg) !important; color: var(--cl-ink); }
+.stApp p, .stApp li, .stApp label, .stApp span, .stMarkdown, [data-testid="stWidgetLabel"] p { color: var(--cl-ink); }
+[data-testid="stCaptionContainer"], .stCaption, [data-testid="stCaptionContainer"] p { color: var(--cl-muted) !important; }
+h1, h2, h3, h4, .cl-page-title, .cl-section-title { color: var(--cl-ink) !important; }
+[data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="select"] > div, [data-baseweb="textarea"],
+[data-testid="stNumberInput"] input, [data-testid="stTextInput"] input, [data-baseweb="input"] input {
+  background: #0E2138 !important; color: var(--cl-ink) !important; border-color: var(--cl-border) !important; }
+[data-testid="stNumberInputStepDown"], [data-testid="stNumberInputStepUp"] { background: #0E2138 !important; color: var(--cl-ink) !important; }
+[data-baseweb="popover"] li, [data-baseweb="menu"] { background: #10253F !important; color: var(--cl-ink) !important; }
+[data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"] { background: #12294A !important; color: var(--cl-ink) !important; border-color: var(--cl-border) !important; }
+[data-testid="stBaseButton-secondary"] p { color: var(--cl-ink) !important; }
+[data-testid="stForm"], [data-testid="stExpander"] details, .st-key-result_card, .st-key-whatif { background: var(--cl-card) !important; border-color: var(--cl-border) !important; }
+.st-key-whatif { background: linear-gradient(180deg, #10253F 0%, #0F2A3C 100%) !important; }
+[data-testid="stExpander"] summary, [data-testid="stExpander"] summary p { color: var(--cl-ink) !important; }
+.stTabs [data-baseweb="tab-list"] { background: #0E2138; }
+.stTabs [aria-selected="true"] { background: #1A3557; }
+.stTabs [data-baseweb="tab"] p { color: var(--cl-ink); }
+[data-testid="stFileUploaderDropzone"] { background: linear-gradient(180deg, #10253F 0%, #0F2A3C 100%) !important; border-color: #2E6B66 !important; }
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] { border-color: var(--cl-border); background: #FFFFFF; }
+[data-testid="stAlert"] { background: #12294A !important; }
+[data-testid="stAlert"] p { color: var(--cl-ink) !important; }
+.cl-cm .cell { background: #0E2138; }
+.cl-dcard .rule { background: #0E2138; }
+.cl-matrix td.pos { color: #7FD1C7; } .cl-matrix td.neg { color: #F4A48F; }
+.cl-delta-up { color: #7FD1C7; } .cl-delta-down { color: #F4A48F; }
+.cl-insight { background: rgba(42, 157, 143, 0.12); }
+.cl-seq li { background: #0E2138; }
+.cl-how summary { background: #0E2138; }
+.cl-devnote { background: rgba(233, 196, 106, 0.12); color: #E9C46A; border-color: rgba(233, 196, 106, 0.3); }
+.cl-tour-mini { color: #7FD1C7; }
+[data-testid="stPlotlyChart"] { background: var(--cl-card); border-color: var(--cl-border); }
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stMarkdownContainer"] code { background: #0E2138; color: #BFE6E0; }

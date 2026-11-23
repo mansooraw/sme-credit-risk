@@ -1,0 +1,2 @@
+LoanID,GrAppv,SBA_Appv,Portion,Term,NoEmp,CreateJob,RetainedJob,NewExist,IsFranchise,UrbanRural,RevLineCr,LowDoc,Sector,State,Bank,BankState,DisbursementGross,Recession
+APP-0001,40000.0,20000.0,,84,2,0,2,Existing,N,Urban,N,N,Other services (except public administration),NY,HSBC BK USA NATL ASSOC,NY,40000.0,1

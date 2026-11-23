@@ -20,3 +20,6 @@ venv/
 # Working files
 PROJECT_BRIEF.md
 reports/~$*
+
+# Interim development model for the app (the final model lives in models/)
+app/_dev/

@@ -1,0 +1,34 @@
+{
+  "built_on": "2026-11-23",
+  "source": "data/processed/loans_features.parquet (full cleaned and engineered table)",
+  "n_loans": 895952,
+  "term_bands": [
+    "Under 1 year",
+    "1 to 3 years",
+    "3 to 5 years",
+    "5 to 7 years",
+    "7 to 10 years",
+    "10 to 15 years",
+    "15 to 20 years",
+    "20 years or more"
+  ],
+  "portion_bands": [
+    "Below 50%",
+    "50 to 60%",
+    "60 to 75%",
+    "75 to 80%",
+    "80 to 85%",
+    "85 to 90%",
+    "90% or more"
+  ],
+  "bank_min_loans": 50,
+  "reference_rows": 50000,
+  "files": [
+    "bank_league.parquet",
+    "bank_years.parquet",
+    "market_state_sector_age.parquet",
+    "market_state_sector_term_portion.parquet",
+    "market_state_sector_year.parquet",
+    "reference_sample.parquet"
+  ]
+}

@@ -40,7 +40,7 @@ streamlit run app/streamlit_app.py
    - **App URL:** choose a short subdomain, for example `creditlens`.
 5. Open **Advanced settings** and set **Python version** to **3.12**. No secrets are needed: the app uses no API keys or passwords.
 6. Click **Deploy**. The first build installs `requirements.txt` and takes a few minutes; the log is visible on the right of the page.
-7. Copy the app URL into `README.md` (the `<streamlit-app-url>` placeholder) and into the report cover page.
+7. Copy the app URL into `README.md` and into the report cover page. The live app is at https://creditlens-sme.streamlit.app.
 
 Streamlit Cloud runs the app from the repository root, so `app/streamlit_app.py` adds the repository root to `sys.path` and `from src import ...` works without any extra configuration.
 

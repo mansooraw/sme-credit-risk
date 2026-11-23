@@ -4,7 +4,7 @@ CreditLens is a decision-support tool for a bank's SME credit desk lending under
 
 Course project for CDS4003 Data Science for Business Application (HCT), organised around the six CRISP-DM phases.
 
-**Live app:** `<streamlit-app-url>`
+**Live app:** https://creditlens-sme.streamlit.app
 
 ## Team
 

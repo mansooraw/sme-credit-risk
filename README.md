@@ -11,8 +11,10 @@ Course project for CDS4003 Data Science for Business Application (HCT), organise
 | Member | Role | GitHub |
 |---|---|---|
 | Mansoor Mohamed Mansoor Saeed Alwahedi (team lead) | Business understanding, modelling and tuning (notebooks 04, 05), report integration, repository admin | [mansooraw](https://github.com/mansooraw) |
-| Salem Adel Salem Alshamlan Almarri | Data collection, data understanding and cleaning (notebooks 01, 02), data dictionary, dataset search evidence | `<github-username>` |
-| Sultan Zayed Ahmed Saeed Alkindi | EDA and feature engineering (notebook 03), Streamlit app and deployment, figures | `<github-username>` |
+| Salem Adel Salem Alshamlan Almarri | Data collection, data understanding and cleaning (notebooks 01, 02), data dictionary, dataset search evidence | shared repository (see note) |
+| Sultan Zayed Ahmed Saeed Alkindi | EDA and feature engineering (notebook 03), Streamlit app and deployment, figures | shared repository (see note) |
+
+The team works in this single repository on the team lead's account. Each commit covers one stage of the project and its message names the content; the header of every notebook and document names its author.
 
 ## Objectives
 
@@ -117,22 +119,81 @@ All paths are resolved through `src/config.py`, and `RANDOM_STATE = 42` is used 
 
 ## Results summary
 
-> **Placeholder.** This table will be completed from `docs/model_comparison.csv` and `models/model_metadata.json` after modelling and tuning (notebooks 04 and 05). No results have been recorded yet.
+Test split: 179,191 held-out loans (20% stratified); cross-validation on the 716,761 training loans. Full tables are in `docs/model_comparison.csv`, `docs/tuning_before_after.csv` and `docs/policy_comparison.csv`; the interpretation is in `docs/evaluation_summary.md` and `docs/model_card.md`.
 
-| Model | ROC-AUC | PR-AUC | Recall (defaults) | Precision (defaults) | Approval rate | Reduction in expected loss vs approve-everything |
+| Model | CV ROC-AUC | Test ROC-AUC | Test PR-AUC | Recall (defaults) | Precision (defaults) | Brier score |
 |---|---|---|---|---|---|---|
-| Dummy (prior) baseline | TBD | TBD | TBD | TBD | TBD | TBD |
-| Logistic regression | TBD | TBD | TBD | TBD | TBD | TBD |
-| Random forest | TBD | TBD | TBD | TBD | TBD | TBD |
-| HistGradientBoosting | TBD | TBD | TBD | TBD | TBD | TBD |
-| LightGBM (tuned, final) | TBD | TBD | TBD | TBD | TBD | TBD |
+| Dummy (prior) baseline | 0.500 | 0.500 | 0.176 | 0.000 | 0.000 | 0.145 |
+| Logistic regression | 0.863 | 0.865 | 0.628 | 0.820 | 0.432 | 0.151 |
+| Random forest | 0.955 | 0.958 | 0.865 | 0.679 | 0.890 | 0.056 |
+| HistGradientBoosting | 0.973 | 0.974 | 0.908 | 0.803 | 0.883 | 0.041 |
+| LightGBM (default settings) | 0.975 | 0.975 | 0.907 | 0.807 | 0.877 | 0.041 |
+| **LightGBM (tuned, final)** | **0.980** | **0.981** | **0.926** | **0.926** at 0.22 | **0.782** at 0.22 | **0.035** |
+
+Recall and precision for the comparison models are at a 0.5 cut-off; the final model is reported at its business threshold of 0.22, chosen on out-of-fold training predictions to maximise portfolio net value with the approval rate kept at 75% or above. Tuning raised the LightGBM test ROC-AUC from 0.9748 to 0.9807 and cut the Brier score from 0.0412 to 0.0352.
+
+| Policy on the test portfolio | Approval rate | Default rate among approved | Net value (USD m) | Charge-off loss (USD m) |
+|---|---|---|---|---|
+| Approve every loan | 100% | 17.6% | 733.7 | 864.4 |
+| Logistic regression at its own threshold (0.62) | 77.4% | 6.5% | 1,094.6 | 327.1 |
+| LightGBM (tuned) at 0.22 | 79.2% | 1.64% | 1,413.5 | 94.4 |
 
 | Objective | Target | Achieved |
 |---|---|---|
-| ROC-AUC on test set | at least 0.80 | TBD |
-| Recall on defaults | at least 0.70 | TBD |
-| Reduction in expected loss | at least 25% at an approval rate of at least 75% | TBD |
-| App response time | under 3 seconds per loan | TBD |
+| ROC-AUC on test set | at least 0.80 | 0.981 |
+| Recall on defaults | at least 0.70 | 0.926 at the 0.22 threshold |
+| Reduction in charge-off loss | at least 25% at an approval rate of at least 75% | 89.1% at a 79.2% approval rate (USD 770 m avoided on the test portfolio) |
+| App response time | under 3 seconds per loan | about 0.2 seconds per loan once the model is cached (about 1 second including the explanation and similar-loan search) |
+
+Temporal validation (train on fiscal years up to 2005, test on 2006 onwards) gives ROC-AUC 0.968 (against 0.981 on the random split) and shows the model under-predicts the 2006 to 2008 vintages, which is why the model card asks for monitoring and periodic retraining.
+
+## App
+
+CreditLens is deployed as a multipage Streamlit app (CRISP-DM Deployment phase) that works on a desktop screen and on a phone. The entry point is `app/streamlit_app.py`. Shared loading, cleaning, scoring, expected-value, explanation and chart code is in `app/utils.py` and reuses `src/cleaning.py` and `src/features.py`, so a loan entered in the app goes through exactly the same steps as the training data. `app/analytics.py` holds the pure computations behind the interactive pages (similar loans, objective thresholds, Monte Carlo, stress test, the game and shareable case links) and is unit-tested on its own; `app/experience.py` holds the presentation layer (dark mode, the animated hero, the auto-play strip and the guided tour). The visual design is in `app/assets/theme.css` and `app/assets/theme_dark.css`, and every chart uses one Plotly template defined in `app/utils.py` that follows the dark-mode toggle.
+
+**Run locally** from the repository root, after installing `requirements.txt`:
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+The app loads the final artefacts from `models/`. If they are not present it falls back to an interim development model in `app/_dev/` (git-ignored), which `python app/build_assets.py interim` creates, and shows a small notice. The same script rebuilds the committed files in `app/assets/`: cleaning parameters, sample files and templates (`raw`, `samples`) and the aggregate files that let the explorer pages run without `data/processed` (`aggregates`, documented in [docs/deployment_guide.md](docs/deployment_guide.md), section 6). No number in the app is typed in: each comes from the model metadata, a committed aggregate or a computation on the scored data.
+
+The sidebar groups the pages in four sections and keeps the threshold, the dark-mode choice and the drill-down filters while you move between pages. Charts with a "click to filter" hint are clickable, every filter also has a tap-friendly selector, and every tile has an "i" control that explains how its number is computed.
+
+| Section | Page | What it shows |
+|---|---|---|
+| Decide | Home | Full-width hero with an animated flow of loans passing a scoring gate in the model's approve, refer and decline proportions, glass metric tiles that count up, a Watch it score strip cycling through three applicants, a guided tour of five pages, how it works, the decision rules and the cost matrix |
+| Decide | Score a loan | Validated form with example cases and shareable links (`?case=`); a short scoring sequence, PD gauge, band, decision, expected value, SHAP drivers, an applicant radar against the training portfolio, the ten most similar training loans and their outcomes, a what-if panel, and a decision memo plus a print-ready (PDF) memo |
+| Decide | Compare applicants | Two or three applicants in an editable table that rescores on every change, a PD bar chart, side-by-side gauges, the top drivers per applicant, a recommendation table, Copy one applicant into another and a shareable link (`?a=&b=&c=`) |
+| Decide | Beat the model | A game on five real held-out loans: approve or decline, the card turns over to show the model's PD and the real outcome, a running score and a final summary of accuracy and value under the cost matrix |
+| Decide | Batch scoring | CSV upload in two layouts, validation, cleaning and scoring; summary tiles, a clickable PD histogram that filters the table, band and decision donuts, a sortable and filterable table whose amount, guarantee, term and sector cells can be edited and rescored, the scored CSV and a portfolio memo |
+| Portfolio | Portfolio and threshold | Threshold slider and objective chips (maximum net value, best with 75% approved, stop 90% of defaults), animated net-value curve, confusion matrix, a clickable state map that filters the sector treemap |
+| Portfolio | Stress test | Recession on every loan, loss given default, margin and guarantee shift applied to the 20,000-loan test sample; animated KPI deltas, net value by threshold before and after, expected loss by sector and the break-even LGD of each sector |
+| Portfolio | Monte Carlo | 1,000 simulated portfolio years at the chosen threshold (each approved loan defaults with its PD): histogram with the 5th, 50th and 95th percentiles, the chance of a loss-making year and a fan chart across thresholds |
+| Explore | Market explorer | Animated map of default rates by state and approval year, sector bars, a sector, business age and outcome sunburst, a term by guarantee heatmap and a loan-volume timeline with the recession shaded; click a state or sector to filter everything, with an insight line under each chart |
+| Explore | Bank league | Searchable league table of 1,245 lenders, a clickable default rate against volume scatter and a profile card with an approvals sparkline |
+| Model | Model lab | ROC, precision-recall and calibration curves for the final and comparison models with a threshold marker (click the ROC curve to set it), the tuning slope chart and why LightGBM was chosen, computed from the metadata |
+| Model | Model insights | Metrics, calibration, ROC, business results, global SHAP importance, model comparison, tuning and temporal validation |
+| Model | Model card and about | Model card, team, course, data provenance, licence and how to add the app to a phone home screen |
+
+Smoke tests for every page and the interactive logic run with `python -m pytest tests/test_app_smoke.py -q`.
+
+| Desktop | Phone |
+|---|---|
+| ![Home](docs/figures/app_home.png) | ![Home on a phone](docs/figures/app_mobile_home.png) |
+| ![Score a loan](docs/figures/app_score_loan.png) | ![Score a loan on a phone](docs/figures/app_mobile_score_loan.png) |
+| ![Compare applicants](docs/figures/app_compare.png) | ![Compare applicants on a phone](docs/figures/app_mobile_compare.png) |
+| ![Beat the model](docs/figures/app_beat_model.png) | ![Beat the model on a phone](docs/figures/app_mobile_beat_model.png) |
+| ![Batch scoring](docs/figures/app_batch_scoring.png) | ![Batch scoring on a phone](docs/figures/app_mobile_batch_scoring.png) |
+| ![Portfolio and threshold](docs/figures/app_portfolio_threshold.png) | ![Portfolio and threshold on a phone](docs/figures/app_mobile_portfolio_threshold.png) |
+| ![Stress test](docs/figures/app_stress_test.png) | ![Stress test on a phone](docs/figures/app_mobile_stress_test.png) |
+| ![Monte Carlo](docs/figures/app_monte_carlo.png) | ![Monte Carlo on a phone](docs/figures/app_mobile_monte_carlo.png) |
+| ![Market explorer](docs/figures/app_market_explorer.png) | ![Market explorer on a phone](docs/figures/app_mobile_market_explorer.png) |
+| ![Bank league](docs/figures/app_bank_league.png) | ![Bank league on a phone](docs/figures/app_mobile_bank_league.png) |
+| ![Model lab](docs/figures/app_model_lab.png) | ![Model lab on a phone](docs/figures/app_mobile_model_lab.png) |
+| ![Model insights](docs/figures/app_model_insights.png) | ![Model insights on a phone](docs/figures/app_mobile_model_insights.png) |
+| ![Model card](docs/figures/app_model_card.png) | ![Model card on a phone](docs/figures/app_mobile_model_card.png) |
 
 ## Licence and citation
 

@@ -20,4 +20,4 @@ The project runs over five milestones from Week 10 to Week 14, one for each CRIS
 
 ## Working arrangements
 
-Mansoor, as team lead, administers the repository, reviews pull requests and integrates the group report. Each member commits the files they lead from their own GitHub account, so the commit history shows who did what. Results quoted in the report are taken from the saved tables in `docs/` rather than retyped.
+Mansoor, as team lead, administers the single shared repository on his GitHub account and integrates the group report. Each member writes the files they lead; the lead commits each stage in build order with a message that names its content, and the header of every notebook and document names its author, so the repository shows who did what. Results quoted in the report are taken from the saved tables in `docs/` rather than retyped.

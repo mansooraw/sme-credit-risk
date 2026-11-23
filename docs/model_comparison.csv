@@ -1,0 +1,6 @@
+model,cv_data,cv_roc_auc_mean,cv_roc_auc_std,cv_pr_auc_mean,cv_pr_auc_std,fit_seconds_per_fold,full_fit_seconds,test_roc_auc,test_pr_auc,test_brier,test_recall_at_0.5,test_precision_at_0.5,test_f1_at_0.5
+Dummy (prior),full training split,0.5,0.0,0.17565,0.0,4.71397,4.89922,0.5,0.17565,0.1448,0.0,0.0,0.0
+Logistic regression,full training split,0.86337,0.00119,0.6224,0.00455,16.43702,21.41112,0.86547,0.62771,0.15129,0.81951,0.43249,0.56618
+Random forest,"200,000-loan stratified subsample",0.95511,0.0017,0.86209,0.00333,30.15114,34.76997,0.95776,0.86549,0.05596,0.67905,0.8898,0.77027
+Hist gradient boosting,full training split,0.97287,0.00074,0.90622,0.00249,10.25167,13.15195,0.97431,0.908,0.04111,0.80337,0.88342,0.84149
+LightGBM,full training split,0.97483,0.00057,0.90806,0.0022,6.7846,7.30515,0.97485,0.9068,0.04122,0.8074,0.87673,0.84064

@@ -1,0 +1,14 @@
+,random split (test),"temporal (train FY<=2005, test FY>=2006)",change
+train_loans,716761.0,652382.0,-64379.0
+test_loans,179191.0,243570.0,64379.0
+train_default_rate,0.1756,0.1171,-0.0586
+test_default_rate,0.1757,0.3325,0.1569
+mean_predicted_pd,0.1757,0.2902,0.1144
+roc_auc,0.9807,0.9676,-0.013
+pr_auc,0.9262,0.9308,0.0046
+f1,0.8479,0.8819,0.034
+precision,0.7817,0.8478,0.0661
+recall,0.9263,0.9189,-0.0074
+brier,0.0351,0.0656,0.0305
+accuracy,0.9416,0.9182,-0.0234
+balanced_accuracy,0.9356,0.9184,-0.0172

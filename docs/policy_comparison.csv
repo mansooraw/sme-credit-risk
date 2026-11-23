@@ -1,0 +1,4 @@
+policy,approval_rate,default_rate_approved,net_value,chargeoff_loss,interest_earned,interest_forgone,expected_default_rate_approved,loss_avoided,loss_reduction_pct,net_value_gain_vs_approve_all
+Approve all,1.0,0.1757,733716875.9532,864435432.4468,1598152308.4,0.0,0.1756,0.0,0.0,0.0
+"LightGBM, threshold 0.22",0.7919,0.0164,1413490190.9686,94432412.8314,1507922603.8,90229704.6,0.0188,770003019.6154,89.0758,679773315.0154
+"Logistic regression, threshold 0.62",0.774,0.0652,1094606843.6448,327143017.7052,1421749861.35,176402447.05,0.2572,537292414.7416,62.1553,360889967.6916

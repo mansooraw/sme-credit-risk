@@ -1,0 +1,7 @@
+model,version,settings,cv_data,cv3_roc_auc_mean,cv3_roc_auc_std,test_roc_auc,test_pr_auc,test_brier,fit_seconds_full_train
+LightGBM,default,library defaults,full training split,0.97471,0.00012,0.97485,0.9068,0.04122,16.35697
+LightGBM,tuned,"{""colsample_bytree"": 0.6039708314340944, ""learning_rate"": 0.07391461574109018, ""min_child_samples"": 200, ""n_estimators"": 601, ""num_leaves"": 104, ""reg_alpha"": 0.06295301484516132, ""reg_lambda"": 0.03807158379249393, ""subsample"": 0.9706635463175177, ""subsample_freq"": 5}",full training split,0.98022,0.00016,0.98069,0.92619,0.03515,44.92952
+Logistic regression,default,C=1,full training split,0.86318,0.0007,0.86547,0.62771,0.15129,16.55923
+Logistic regression,tuned,C=0.1,full training split,0.86318,0.00069,0.86547,0.6276,0.15135,16.50069
+Random forest,default,"{""n_estimators"": 300, ""max_depth"": 20, ""min_samples_leaf"": 20, ""max_features"": ""sqrt""}","200,000-loan subsample",0.95365,0.0012,0.96563,0.88654,0.04996,198.95811
+Random forest,tuned,"{""n_estimators"": 200, ""min_samples_leaf"": 20, ""max_features"": 0.3, ""max_depth"": 16}","200,000-loan subsample",0.96411,0.00094,0.97218,0.90255,0.04452,192.66896

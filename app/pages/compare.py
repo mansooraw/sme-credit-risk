@@ -1,4 +1,6 @@
-"""Compare applicants: two or three applications side by side, edited in a live table and rescored on every change."""
+"""Compare applicants, built from the compare concept: the copy strip, then the comparison table (a metric column and
+one card per applicant with its PD, decision and inputs; the best expected value tinted), or the input table while
+editing; below, the drivers of each score beside the recommendation and the rows that open the sheets."""
 
 import sys
 from pathlib import Path
@@ -11,17 +13,11 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import analytics as A  # noqa: E402
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 
 model = U.load_model()
-X.page_start("compare")
-U.page_header(
-    "Compare applicants",
-    "Put two or three applications side by side. Edit any cell of the table: the probability of default, risk band, "
-    "decision and expected value are recomputed straight away, and the charts below follow.",
-    eyebrow="Side by side",
-)
+ui.page("Compare applicants", "Three profiles. One clear comparison.", eyebrow="Decide", heading="Compare applicants")
 
 fields = U.schema_fields()
 feat_f = fields["features"]
@@ -30,10 +26,10 @@ states = sorted(s for s in (feat_f.get("State") or {}).get("allowed", []) if s !
 bank_states = sorted(s for s in (feat_f.get("BankState") or {}).get("allowed", []) if s != "Unknown")
 banks = [U.NEW_BANK_OPTION] + sorted(b for b in (feat_f.get("Bank") or {}).get("allowed", []) if b != "Unknown")
 NAMES = ["A", "B", "C"]
-APPLICANT_COLOURS = {"A": U.COLOURS["navy"], "B": "#4C86B8", "C": "#9AA9BF"}
 INPUTS = ["GrAppv", "Portion", "DisbursementGross", "Term", "NoEmp", "CreateJob", "RetainedJob", "NewExist", "IsFranchise",
           "UrbanRural", "RevLineCr", "LowDoc", "Sector", "State", "Bank", "BankState", "Recession"]
 OUTPUTS = ["PD", "Band", "Decision", "Expected value", "Expected loss"]
+WORDS = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}
 
 
 def from_example(ex: dict) -> dict:
@@ -67,7 +63,7 @@ def score(base: pd.DataFrame) -> pd.DataFrame:
         out[c] = rows[c].to_numpy()
     out["PD"] = p
     out["Band"] = U.band_names(p)
-    out["Decision"] = U.decisions(p)
+    out["Decision"] = U.decisions(p, U.shared_threshold(), max(U.decline_threshold(), U.shared_threshold()))
     out["Expected value"] = np.round(ev, 0)
     out["Expected loss"] = np.round(el, 0)
     st.session_state["cmp_feats"] = feats
@@ -106,93 +102,155 @@ if edits:
     st.session_state["cmp_version"] = version
     editor_key = f"cmp_editor_{version}"
 
-c1, c2, c3, c4 = st.columns([1.1, 1, 1, 1.2], vertical_alignment="bottom")
-three = c1.toggle("Compare three applicants", value=st.session_state.get("cmp_three", True), key="cmp_three")
-src = c2.selectbox("Copy applicant", NAMES if three else NAMES[:2], key="cmp_from")
-dst = c3.selectbox("into", [n for n in (NAMES if three else NAMES[:2]) if n != src], key="cmp_to")
-if c4.button("Copy", icon=":material/content_copy:", use_container_width=True, key="cmp_copy",
-             help="Copies every input of one applicant into another, so you can change one thing at a time."):
-    base.loc[dst, INPUTS] = base.loc[src, INPUTS].to_numpy()
-    st.session_state["cmp_base"] = score(base)
-    st.session_state["cmp_version"] = version + 1
-    st.rerun()
 
-view = base.loc[NAMES if three else NAMES[:2]]
+# ---------------------------------------------------------------------------
+# The pill strip: three applicants, copy one applicant into another
+# ---------------------------------------------------------------------------
+
+with st.container(key="cmp_controls"):
+    c0, c1, c2, c3, c4, c5 = st.columns([1.5, 0.95, 1.6, 0.35, 1.6, 0.9], gap="small", vertical_alignment="center")
+    with c0:
+        three = st.toggle("Three applicants", value=st.session_state.get("cmp_three", True), key="cmp_three")
+    pool = NAMES if three else NAMES[:2]
+    c1.caption("Copy applicant")
+    src = c2.selectbox("Copy applicant", pool, key="cmp_from", label_visibility="collapsed")
+    c3.caption("into")
+    dst = c4.selectbox("Into", [n for n in pool if n != src], key="cmp_to", label_visibility="collapsed")
+    if c5.button("Copy", use_container_width=True, key="cmp_copy",
+                 help="Copies every input of one applicant into another, so you can change one thing at a time."):
+        base.loc[dst, INPUTS] = base.loc[src, INPUTS].to_numpy()
+        st.session_state["cmp_base"] = score(base)
+        st.session_state["cmp_version"] = version + 1
+        st.rerun()
+
+shown_names = NAMES if three else NAMES[:2]
+if st.session_state.get("btn_row_cmp_edit"):
+    st.session_state["cmp_edit"] = not bool(st.session_state.get("cmp_edit"))
+editing = bool(st.session_state.get("cmp_edit"))
+
+t = U.shared_threshold()
+d = max(U.decline_threshold(), t)
+view = base.loc[shown_names].copy()
+view["Decision"] = U.decisions(view["PD"].to_numpy(), t, d)  # follows the shared threshold
+view["Band"] = U.band_names(view["PD"].to_numpy())
 st.session_state["cmp_view_index"] = list(view.index)
-st.data_editor(
-    view, key=editor_key, use_container_width=True, num_rows="fixed",
-    disabled=OUTPUTS,
-    column_order=OUTPUTS + INPUTS,
-    column_config={
-        "PD": st.column_config.ProgressColumn("PD", format="percent", min_value=0, max_value=1, width="small"),
-        "Band": st.column_config.TextColumn("Band", width="small"),
-        "Decision": st.column_config.TextColumn("Decision", width="small"),
-        "Expected value": st.column_config.NumberColumn("Expected value (USD)", format="localized"),
-        "Expected loss": st.column_config.NumberColumn("Expected loss (USD)", format="localized"),
-        "GrAppv": st.column_config.NumberColumn("Approved (USD)", min_value=1000, step=5000, format="localized"),
-        "Portion": st.column_config.NumberColumn("Guaranteed share", min_value=0.05, max_value=1.0, step=0.05, format="percent"),
-        "DisbursementGross": st.column_config.NumberColumn("Disbursed (USD)", min_value=4000, step=5000, format="localized"),
-        "Term": st.column_config.NumberColumn("Term (months)", min_value=1, max_value=480, step=6),
-        "NoEmp": st.column_config.NumberColumn("Employees", min_value=0, step=1),
-        "CreateJob": st.column_config.NumberColumn("Jobs created", min_value=0, step=1),
-        "RetainedJob": st.column_config.NumberColumn("Jobs retained", min_value=0, step=1),
-        "NewExist": st.column_config.SelectboxColumn("Business age", options=["Existing", "New"], required=True),
-        "IsFranchise": st.column_config.SelectboxColumn("Franchise", options=["N", "Y"], required=True),
-        "UrbanRural": st.column_config.SelectboxColumn("Location", options=["Urban", "Rural"], required=True),
-        "RevLineCr": st.column_config.SelectboxColumn("Revolving line", options=["N", "Y"], required=True),
-        "LowDoc": st.column_config.SelectboxColumn("LowDoc", options=["N", "Y"], required=True),
-        "Sector": st.column_config.SelectboxColumn("Sector", options=sectors, required=True, width="medium"),
-        "State": st.column_config.SelectboxColumn("State", options=states, required=True),
-        "Bank": st.column_config.SelectboxColumn("Bank", options=banks, required=True, width="medium"),
-        "BankState": st.column_config.SelectboxColumn("Bank state", options=bank_states, required=True),
-        "Recession": st.column_config.CheckboxColumn("Recession stress"),
-    },
-)
-st.caption("Grey columns are computed. Scroll the table sideways for every input; on a phone, tap a cell to edit it.")
-
-t, d = U.threshold(), U.decline_threshold()
 names = list(view.index)
-feats_all = st.session_state["cmp_feats"]
-feats = feats_all.loc[names]
+feats = st.session_state["cmp_feats"].loc[names]
 
-# Grouped bar of PD and side-by-side gauges
-g1, g2 = st.columns([1, 1.35], gap="large")
-with g1:
-    fig = go.Figure(go.Bar(
-        x=[f"Applicant {n}" for n in names], y=view["PD"] * 100,
-        marker=dict(color=[U.DECISION_COLOURS[v] for v in view["Decision"]], line=dict(color="#FFFFFF", width=1.5)),
-        text=[f"{v:.1%}" for v in view["PD"]], textposition="outside", cliponaxis=False,
-        customdata=np.stack([view["Band"], view["Decision"], view["Expected value"]], axis=1),
-        hovertemplate="<b>%{x}</b><br>PD %{y:.1f}%<br>%{customdata[0]} risk, %{customdata[1]}"
-                      "<br>Expected value USD %{customdata[2]:,.0f}<extra></extra>"))
-    fig.add_hline(y=t * 100, line_dash="dot", line_color=U.INK, annotation_text=f"approve below {t:.0%}",
-                  annotation_position="bottom right", annotation_font=dict(size=11, color=U.INK))
-    fig.add_hline(y=d * 100, line_dash="dash", line_color=U.COLOURS["red"], annotation_text=f"decline from {d:.0%}",
-                  annotation_position="top right", annotation_font=dict(size=11, color=U.COLOURS["red"]))
-    fig.update_layout(title="Probability of default", yaxis=dict(title="PD (%)", range=[0, max(100 * view["PD"].max() * 1.3, d * 110)]),
-                      barcornerradius=8, bargap=0.45, showlegend=False)
-    U.chart(fig, height=360, key="cmp_bar")
-with g2:
-    cols = st.columns(len(names))
-    for col, n in zip(cols, names):
-        with col:
-            r = view.loc[n]
-            U.html(f'<div style="text-align:center"><div class="cl-tile-label">Applicant {n}</div>'
-                   f'<div class="cl-big-num">{r["PD"]:.1%}</div></div>')
-            U.chart(U.gauge_figure(float(r["PD"]), t, compact=True), height=150, key=f"cmp_gauge_{n}")
-            U.html(f'<div style="text-align:center;margin-top:-6px">{U.decision_chip(r["Decision"])}</div>')
-
-# Drivers per applicant
-U.section_title("What drives each score", "chart")
 contribs = {}
 for n in names:
     try:
         contribs[n], _ = U.local_contributions(model, feats.loc[[n]])
     except Exception:  # noqa: BLE001
         contribs[n] = None
-if all(c is not None for c in contribs.values()):
+
+best = view["Expected value"].idxmax()
+lowest = view["PD"].idxmin()
+
+LABELS = {"GrAppv": "Approved (USD)", "Portion": "Guaranteed share", "DisbursementGross": "Disbursed (USD)",
+          "Term": "Term (months)", "NoEmp": "Employees", "CreateJob": "Jobs created", "RetainedJob": "Jobs retained",
+          "NewExist": "Business age", "IsFranchise": "Franchise", "UrbanRural": "Location", "RevLineCr": "Revolving line",
+          "LowDoc": "LowDoc", "Sector": "Sector", "State": "State", "Bank": "Bank", "BankState": "Bank state",
+          "Recession": "Recession stress"}
+
+
+def show(col: str, v) -> str:
+    if col in ("GrAppv", "DisbursementGross"):
+        return ui.money(float(v), unit="").strip()
+    if col == "Portion":
+        return f"{float(v):.0%}"
+    if col == "Recession":
+        return "On" if bool(v) else "Off"
+    if col == "Bank":
+        return str(v).title()
+    return str(v)
+
+
+diff = [(c, [show(c, view.loc[n, c]) for n in names]) for c in INPUTS
+        if len({show(c, view.loc[n, c]) for n in names}) > 1]
+
+# The comparison table: one metric column, one card per applicant, rows aligned across the cards
+METRICS = [
+    ("Expected net value", lambda r: ui.money(float(r["Expected value"]))),
+    ("Expected loss", lambda r: ui.money(float(r["Expected loss"]))),
+    ("Approved", lambda r: ui.money(float(r["GrAppv"]))),
+    ("Guaranteed share", lambda r: f"{float(r['Portion']):.0%}"),
+    ("Term", lambda r: ui.months(int(r["Term"]))),
+    ("Employees", lambda r: ui.num(float(r["NoEmp"]))),
+    ("Business age", lambda r: "New" if str(r["NewExist"]) == "New" else "Existing"),
+    ("Revolving line", lambda r: "Yes" if str(r["RevLineCr"]) == "Y" else "No"),
+]
+
+
+def decision_badge(n: str) -> str:
+    """One badge for the decision and the band, in the tone of the decision ("Refer / High risk")."""
+    decision = str(view.loc[n, "Decision"])
+    word = f"{decision} / {view.loc[n, 'Band']} risk"
+    return ui.badge(word, large=True).replace(f"ui-badge {ui.tone(word)}", f"ui-badge {ui.tone(decision)}", 1)
+
+
+def applicant_card(n: str) -> None:
+    r = view.loc[n]
+    body = (ui.pair([(f"Applicant {n}", ui.pct(float(r["PD"])), "PD")]) + decision_badge(n)
+            + ui.rows([{"a": fmt(r)} for _, fmt in METRICS]))
+    ui.card("", None, body, kind="tint" if n == best else "")
+
+
+def table_editor() -> None:
+    U.html(ui.card_html("Inputs of each applicant", "Edit any white cell; the grey columns are computed and rescore.", ""))
+    st.data_editor(
+        view, key=editor_key, use_container_width=True, num_rows="fixed",
+        disabled=OUTPUTS,
+        column_order=OUTPUTS + INPUTS,
+        column_config={
+            "PD": st.column_config.ProgressColumn("PD", format="percent", min_value=0, max_value=1, width="small"),
+            "Band": st.column_config.TextColumn("Band", width="small"),
+            "Decision": st.column_config.TextColumn("Decision", width="small"),
+            "Expected value": st.column_config.NumberColumn("Expected value (USD)", format="localized"),
+            "Expected loss": st.column_config.NumberColumn("Expected loss (USD)", format="localized"),
+            "GrAppv": st.column_config.NumberColumn("Approved (USD)", min_value=1000, step=5000, format="localized"),
+            "Portion": st.column_config.NumberColumn("Guaranteed share", min_value=0.05, max_value=1.0, step=0.05, format="percent"),
+            "DisbursementGross": st.column_config.NumberColumn("Disbursed (USD)", min_value=4000, step=5000, format="localized"),
+            "Term": st.column_config.NumberColumn("Term (months)", min_value=1, max_value=480, step=6),
+            "NoEmp": st.column_config.NumberColumn("Employees", min_value=0, step=1),
+            "CreateJob": st.column_config.NumberColumn("Jobs created", min_value=0, step=1),
+            "RetainedJob": st.column_config.NumberColumn("Jobs retained", min_value=0, step=1),
+            "NewExist": st.column_config.SelectboxColumn("Business age", options=["Existing", "New"], required=True),
+            "IsFranchise": st.column_config.SelectboxColumn("Franchise", options=["N", "Y"], required=True),
+            "UrbanRural": st.column_config.SelectboxColumn("Location", options=["Urban", "Rural"], required=True),
+            "RevLineCr": st.column_config.SelectboxColumn("Revolving line", options=["N", "Y"], required=True),
+            "LowDoc": st.column_config.SelectboxColumn("LowDoc", options=["N", "Y"], required=True),
+            "Sector": st.column_config.SelectboxColumn("Sector", options=sectors, required=True, width="medium"),
+            "State": st.column_config.SelectboxColumn("State", options=states, required=True),
+            "Bank": st.column_config.SelectboxColumn("Bank", options=banks, required=True, width="medium"),
+            "BankState": st.column_config.SelectboxColumn("Bank state", options=bank_states, required=True),
+            "Recession": st.column_config.CheckboxColumn("Recession stress"),
+        },
+    )
+
+
+if editing:
+    with st.container(key="cmp_edit_rows"):
+        table_editor()
+else:
+    with st.container(key="cmp_table"):
+        cols = st.columns([1.05] + [1] * len(names), gap="small")
+        with cols[0]:
+            ui.card("", None, ui.pair([("Metric", "PD", None)]) + ui.badge("Decision", large=True)
+                    + ui.rows([{"a": label} for label, _ in METRICS]))
+        for col, n in zip(cols[1:], names):
+            with col:
+                applicant_card(n)
+
+
+def drivers_chart() -> None:
+    if not all(c is not None for c in contribs.values()):
+        U.html(ui.card_html("What drives each score", None,
+                            ui.empty("This model has no per-loan explanations: run notebook 05 to write them.")))
+        return
     strength = pd.concat([c.set_index("feature")["contribution"].abs().rename(n) for n, c in contribs.items()], axis=1)
-    top = strength.max(axis=1).sort_values(ascending=False).head(7).index[::-1]
+    top = strength.max(axis=1).sort_values(ascending=False).head(6).index[::-1]
+    colours = {"A": ui.CHART["accent"], "B": ui.CHART["series2"], "C": ui.CHART["series3"]}
     fig = go.Figure()
     for n in names:
         cf = contribs[n].set_index("feature")
@@ -200,48 +258,88 @@ if all(c is not None for c in contribs.values()):
         shown = [str(cf.loc[f, "value"]) if f in cf.index else "" for f in top]
         fig.add_trace(go.Bar(
             y=[U.short_label(f) for f in top], x=vals, orientation="h", name=f"Applicant {n}",
-            marker=dict(color=APPLICANT_COLOURS[n]), customdata=shown,
-            hovertemplate=f"<b>Applicant {n}</b><br>%{{y}}: %{{customdata}}<br>Contribution %{{x:+.3f}} log-odds"
-                          "<br>Positive raises the risk<extra></extra>"))
-    fig.add_vline(x=0, line_color=U.COLOURS["grey"], line_width=1)
-    fig.update_layout(barmode="group", title="Top drivers, contribution to the score (log-odds)", barcornerradius=4,
-                      xaxis=dict(title="Lowers the risk   |   Raises the risk"), bargap=0.25, bargroupgap=0.08,
-                      margin=dict(l=8, r=8, t=78, b=44))
-    U.chart(fig, height=60 * len(top) + 140, key="cmp_drivers")
-else:
-    st.info("Per-loan explanations are not available for this model.")
+            marker=dict(color=colours[n]), customdata=shown,
+            hovertemplate=f"Applicant {n}<br>%{{y}}: %{{customdata}}<br>Contribution %{{x:+.3f}} log-odds<extra></extra>"))
+    fig.add_vline(x=0, line_color=ui.CHART["ink"], line_width=1)
+    ui.chart_layout(fig, "What drives each score")
+    fig.add_annotation(text=f"Approval threshold {t:.1%}  ·  Decline from {d:.1%}", xref="paper", yref="paper",
+                       x=1, y=1, xanchor="right", yanchor="bottom", yshift=14, showarrow=False,
+                       font=dict(size=12, color=ui.CHART["ink"]), bgcolor=ui.CHART["canvas"],
+                       bordercolor=ui.CHART["hairline"], borderwidth=1, borderpad=6)
+    fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.06,
+                      xaxis=dict(title="Lowers risk  ←  Log-odds  →  Raises risk", zeroline=False),
+                      yaxis=dict(automargin=True),
+                      legend=dict(orientation="v", x=1.02, xanchor="left", y=0.5, yanchor="middle", traceorder="normal"))
+    with st.container(key="picture_fixed"):
+        U.chart(fig, height=330, key="cmp_drivers")
 
-# Recommendation table
-U.section_title("Recommendation", "check")
-best = view["Expected value"].idxmax()
-lowest = view["PD"].idxmin()
-rec = pd.DataFrame({
-    "Applicant": names,
-    "PD": view["PD"].to_numpy(),
-    "Risk band": view["Band"].to_numpy(),
-    "Recommendation": view["Decision"].to_numpy(),
-    "Expected value (USD)": view["Expected value"].round(0).to_numpy(),
-    "Expected loss (USD)": view["Expected loss"].round(0).to_numpy(),
-    "Main reason": [U.explanation_sentences(contribs[n], 1)[0] if contribs.get(n) is not None else "" for n in names],
-})
-st.dataframe(rec, hide_index=True, use_container_width=True, column_config={
-    "PD": st.column_config.ProgressColumn("PD", format="percent", min_value=0, max_value=1),
-    "Expected value (USD)": st.column_config.NumberColumn(format="localized"),
-    "Expected loss (USD)": st.column_config.NumberColumn(format="localized"),
-    "Main reason": st.column_config.TextColumn(width="large"),
-})
-gap = float(view.loc[best, "Expected value"] - view["Expected value"].drop(best).max()) if len(view) > 1 else 0.0
-tail = ("and also has the lowest probability of default" if best == lowest else
-        f"while applicant {lowest} has the lowest probability of default")
-U.html(f'<div class="cl-insight">{U.icon("spark", 18)}<span>Applicant {best} offers the highest expected value '
-       f'({U.fmt_usd(float(view.loc[best, "Expected value"]))}, {U.fmt_usd(gap)} ahead of the next) {tail} '
-       f'({view.loc[lowest, "PD"]:.1%}).</span></div>')
 
-# Shareable link
-links = "&".join(f"{p}={A.encode_case({**r.to_dict(), 'SBA_Appv': r['Portion'] * r['GrAppv'], 'Recession': int(bool(r['Recession']))})}"
-                 for p, (_, r) in zip(["a", "b", "c"], view.iterrows()))
-host = st.context.headers.get("host", "") if hasattr(st, "context") else ""
-scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
-with st.expander("Share this comparison"):
+with st.container(key="two"):
+    left, right = st.columns([2.6, 1], gap="medium")
+    with left:
+        drivers_chart()
+    with right:
+        gap = float(view.loc[best, "Expected value"] - view["Expected value"].drop(best).max()) if len(view) > 1 else 0.0
+        with st.container(key="sheet_rows"):
+            U.html(ui.card_html("Recommendation", f"Applicant {best}: highest expected net value, "
+                                f"{ui.money(gap)} ahead of the next.", ""))
+            ui.row_button({"a": "Edit the inputs", "a_small": "Back to the comparison" if editing else "Opens the input table"},
+                          key="cmp_edit", chosen=editing)
+            if diff:
+                c, values = diff[0]
+                joined = " / ".join(f"{n} {v}" for n, v in zip(names, values))
+                first = f"{LABELS[c]}: {joined}" if len(joined) <= 24 else LABELS[c]
+                if ui.row_button({"a": "Differences", "a_small": first, "b": f"{len(diff)} inputs"}, key="cmp_diff"):
+                    st.session_state["cmp_sheet"] = "diff"
+            else:
+                U.html(ui.rows([{"a": "Differences", "a_small": "The applicants have the same inputs. Edit one to compare."}]))
+            if ui.row_button({"a": "Share link", "a_small": "Holds every applicant's inputs"}, key="cmp_share"):
+                st.session_state["cmp_sheet"] = "share"
+            if ui.row_button({"a": "What drives each score", "a_small": "How this is worked out"}, key="cmp_method"):
+                st.session_state["cmp_sheet"] = "method"
+
+
+# ---------------------------------------------------------------------------
+# Sheets
+# ---------------------------------------------------------------------------
+
+@st.dialog("Share link")
+def share_sheet() -> None:
+    links = "&".join(f"{p}={A.encode_case({**r.to_dict(), 'SBA_Appv': r['Portion'] * r['GrAppv'], 'Recession': int(bool(r['Recession']))})}"
+                     for p, (_, r) in zip(["a", "b", "c"], view.iterrows()))
+    host = st.context.headers.get("host", "") if hasattr(st, "context") else ""
+    scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
+    U.html(ui.note("The link holds the inputs of each applicant; opening it scores them again.", "accent"))
     st.code(f"{scheme}://{host}/compare?{links}" if host else f"/compare?{links}", language=None)
-    st.caption("The link holds the inputs of each applicant; opening it rebuilds this table.")
+
+
+@st.dialog("What drives each score")
+def method_sheet() -> None:
+    reasons = [f"Applicant {n}: {U.explanation_sentences(contribs[n], 1)[0]}" for n in names
+               if contribs.get(n) is not None and len(contribs[n])]
+    if reasons:
+        U.html(ui.eyebrow("Main reason for each score") + "".join(ui.note(s, "accent") for s in reasons))
+    gap = float(view.loc[best, "Expected value"] - view["Expected value"].drop(best).max()) if len(view) > 1 else 0.0
+    tail = "and the lowest PD" if best == lowest else f"; applicant {lowest} has the lowest PD ({view.loc[lowest, 'PD']:.1%})"
+    U.html(ui.eyebrow("How this is worked out") + "".join(ui.note(s, "accent") for s in [
+        f"Applicant {best} has the highest expected value, {ui.money(gap)} ahead of the next, {tail}.",
+        "The grey columns of the input table are computed; edit any other cell to rescore.",
+        f"Decisions use the shared approval threshold ({t:.1%}) and the decline level ({d:.1%}).",
+        "Expected value = (1 - PD) x gain if repaid - PD x loss if default, from the cost matrix.",
+        "Drivers are SHAP contributions in log-odds; the eight strongest inputs across the applicants are shown.",
+    ]))
+
+
+@st.dialog("Differences")
+def diff_sheet() -> None:
+    table = pd.DataFrame([[LABELS[c]] + values for c, values in diff], columns=["Input"] + [f"Applicant {n}" for n in names])
+    st.dataframe(table, hide_index=True, use_container_width=True)
+
+
+sheet = st.session_state.pop("cmp_sheet", None)
+if sheet == "share":
+    share_sheet()
+elif sheet == "method":
+    method_sheet()
+elif sheet == "diff" and diff:
+    diff_sheet()

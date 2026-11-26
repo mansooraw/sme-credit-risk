@@ -39,42 +39,56 @@ def test_entry_point_and_navigation():
     at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=TIMEOUT)
     at.run()
     assert not at.exception, [e.message for e in at.exception]
-    assert "Default risk scoring" in all_text(at)
-    at.button(key="hero_score").click()  # hero button navigates with st.switch_page
-    at.run()
-    assert not at.exception, [e.message for e in at.exception]
-    assert "Probability of default" in all_text(at)
+    text = all_text(at)
+    assert "Overview" in text and "ui-figure" in text
     for page in ["score_loan.py", "compare.py", "beat_model.py", "batch_scoring.py", "portfolio_threshold.py",
                  "stress_test.py", "monte_carlo.py", "market_explorer.py", "bank_league.py", "model_lab.py",
                  "model_insights.py", "model_card.py"]:
         at.switch_page(f"pages/{page}")
         at.run()
         assert not at.exception, (page, [e.message for e in at.exception])
+    at = run_page("score_loan.py")
+    assert "Probability of default" in all_text(at)
 
 
 def test_home():
     at = run_page("home.py")
     text = all_text(at)
-    for expected in ["ROC-AUC", "Recall on defaults", "How it works", "Why it matters", "cost matrix"]:
+    for expected in ["ROC-AUC", "Defaults caught", "Decision policy", "Cost assumptions", "Example applications"]:
         assert expected in text, expected
+    # the figure cards are the filters of the middle picture
+    assert "home_pick" not in at.session_state
+    at.button(key="btn_figures_loss").click()
+    at.run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert at.session_state["home_pick"] == "loss"
+
+
+def submit(at):
+    [b for b in at.button if b.label == "Score application"][0].click()
 
 
 def test_score_default_loan_is_fast_and_explained():
-    at = run_page("score_loan.py")
-    at.button[3].click()  # form submit button (after the three example buttons)
+    at = run_page("score_loan.py")  # the borderline example is scored on first load
+    at.button(key="btn_row_edit").click()  # Edit application opens the form in the middle
+    at.run()
+    submit(at)
     at.run()  # first scoring
     assert not at.exception, [e.message for e in at.exception]
+    at.button(key="btn_row_edit").click()
+    at.run()
     at.number_input[3].set_value(60)  # term in months, so the second run scores a different loan
-    at.button[3].click()
+    submit(at)
     start = time.perf_counter()
     at.run()  # second scoring, model and explainer cached
     elapsed = time.perf_counter() - start
     assert not at.exception, [e.message for e in at.exception]
-    reported = [c.value for c in at.caption if c.value.startswith("Scored and explained in")]
-    assert reported, "timing caption missing"
-    seconds = float(reported[0].split(" in ")[1].split(" ")[0])
-    assert seconds < 3.0, reported[0]
-    print(f"single-loan scoring: {reported[0]} (whole page rerun {elapsed:.2f} s)")
+    assert at.session_state["score_result"]["row"]["Term"] == 60
+    reported = [line for line in all_text(at).splitlines() if "Scored in " in line]
+    assert reported, "timing line missing"
+    seconds = float(reported[0].split("Scored in ")[1].split(" ")[0])
+    assert seconds < 3.0, seconds
+    print(f"single-loan scoring: {seconds:.2f} s (whole page rerun {elapsed:.2f} s)")
     text = all_text(at)
     assert "Probability of default" in text
     assert "What drives this score" in text
@@ -85,6 +99,8 @@ def test_score_default_loan_is_fast_and_explained():
 
 def test_what_if_panel_rescores():
     at = run_page("score_loan.py")  # the borderline example is scored on first load
+    at.button(key="btn_figures_decision").click()  # the Decision figure shows the what-if by term
+    at.run()
     assert "PD in this scenario" in all_text(at)
     before = [m for m in all_text(at).splitlines() if "PD in this scenario" in m][0]
     term = [s for s in at.slider if s.label == "Term (months)"][0]
@@ -98,32 +114,37 @@ def test_what_if_panel_rescores():
 
 def test_score_examples_and_validation():
     at = run_page("score_loan.py")
-    for i in range(3):
-        at.button[i].click()
+    for key in ["btn_borderline", "btn_low", "btn_high"]:
+        at.button(key=key).click()
         at.run()
         assert not at.exception, [e.message for e in at.exception]
         assert "Probability of default" in all_text(at)
     # Guaranteed amount above the approved amount must be rejected
     at = run_page("score_loan.py")
+    at.button(key="btn_row_edit").click()
+    at.run()
     at.number_input[0].set_value(50_000.0)   # approved
     at.number_input[1].set_value(80_000.0)   # guaranteed
-    at.button[3].click()
+    submit(at)
     at.run()
     assert not at.exception
-    assert any("cannot be above the approved amount" in e.value for e in at.error)
+    assert "cannot be above the approved amount" in all_text(at)
 
 
 def test_score_with_share_and_new_bank():
     at = run_page("score_loan.py")
+    at.button(key="btn_row_edit").click()
+    at.run()
     at.radio[0].set_value("Guaranteed share")
     at.run()
     bank = [s for s in at.selectbox if s.label == "Lending bank"][0]
     bank.set_value("Other / new bank")
     at.toggle[0].set_value(False)
-    at.button[3].click()
+    submit(at)
     at.run()
     assert not at.exception, [e.message for e in at.exception]
     assert "Probability of default" in all_text(at)
+    assert at.session_state["score_result"]["row"]["Bank"] == "Other / new bank"
 
 
 def test_batch_with_sample_files():
@@ -131,8 +152,8 @@ def test_batch_with_sample_files():
     at.toggle[0].set_value(True)
     at.run()
     assert not at.exception, [e.message for e in at.exception]
-    assert any("passed validation" in s.value for s in at.success)
-    assert len(at.dataframe) >= 2
+    assert "passed validation" in all_text(at)
+    assert len(at.get("plotly_chart")) >= 1
     assert "Approval rate" in all_text(at) and "Portfolio summary" in all_text(at)
 
 
@@ -162,7 +183,7 @@ def test_portfolio_threshold():
 
 def test_model_insights_and_card():
     at = run_page("model_insights.py")
-    assert len(at.tabs) == 4 and [t.label for t in at.tabs] == ["Performance", "Drivers", "Tuning", "Over time"]
+    assert {b.key for b in at.button} >= {"btn_figures_roc", "btn_figures_pr", "btn_figures_recall", "btn_figures_temporal"}
     at = run_page("model_card.py")
     text = all_text(at)
     assert "Data provenance and licence" in text and "Add to Home Screen" in text
@@ -172,48 +193,27 @@ def test_model_insights_and_card():
 # New pages and interactions
 # ---------------------------------------------------------------------------
 
-def test_dark_mode_and_tour_from_entry_point():
+def test_dark_mode_from_entry_point():
     at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=TIMEOUT)
     at.run()
     at.toggle(key="_dark_toggle").set_value(True)
     at.run()
     assert not at.exception, [e.message for e in at.exception]
     assert at.session_state["dark_mode"] is True
-    assert any("--cl-bg: #0A1628" in m.value for m in at.markdown)  # dark variables injected
-    at.button(key="hero_tour").click()
-    at.run()
-    assert at.session_state["tour_step"] == 0
-    assert "Step 1 of 5" in all_text(at)
-    import experience as X
-    # Each step's page shows the highlighted card; Next moves the tour on (st.switch_page is followed by the
-    # browser; AppTest runs each page on its own, where the helper falls back to a toast)
-    for step, item in enumerate(X.TOUR):
-        page = AppTest.from_file(str(APP / item["path"]), default_timeout=TIMEOUT)
-        page.session_state["tour_step"] = step
-        page.run()
-        assert not page.exception, (step, [e.message for e in page.exception])
-        assert f"Step {step + 1} of 5" in all_text(page), step
-        page.button(key="tour_next").click()
-        page.run()
-        if step < len(X.TOUR) - 1:
-            assert page.session_state["tour_step"] == step + 1
-        else:
-            assert "tour_step" not in page.session_state
-    # The last step pre-fills and scores the borderline example on the Score page
-    page = AppTest.from_file(str(APP / X.TOUR[-1]["path"]), default_timeout=TIMEOUT)
-    page.session_state["tour_step"] = len(X.TOUR) - 2
-    page.session_state["example"] = "borderline"
-    page.session_state["auto_score"] = True
-    page.run()
-    assert "Probability of default" in all_text(page)
+    assert any("--cl-bg: #0F1419" in m.value for m in at.markdown)  # dark variables injected
+    for key in ["btn_figures_roc", "btn_figures_recall", "btn_figures_approval", "btn_figures_loss"]:
+        assert at.button(key=key) is not None
 
 
-def test_home_watch_strip_and_glass_tiles():
+def test_home_board_parts():
     at = run_page("home.py")
     text = all_text(at)
-    assert "Watch it score" in text and "cl-watch-card" in text and "cl-tiles glass" in text
-    assert text.count("cl-watch-card") == 3
-    assert "How it is computed" in text or "cl-how" in text
+    assert "ui-kpis" in text and text.count("ui-badge") >= 3  # the figure strip and three example rows
+    assert "ui-bar" in text and "ui-card" in text and "ui-stack" in text and "ui-strip" in text
+    # a row opens the application sheet
+    at.button(key="btn_row_ex_borderline").click()
+    at.run()
+    assert not at.exception, [e.message for e in at.exception]
 
 
 def test_score_shared_case_link_and_similar_loans():

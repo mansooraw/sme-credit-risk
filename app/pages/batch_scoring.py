@@ -1,5 +1,14 @@
-"""Batch scoring: upload a CSV of loans, validate, clean, score, summarise and download."""
+"""Batch scoring: upload a CSV of loans, validate, clean, score, summarise and download.
 
+The title block and the figure strip. Before a file is loaded the left column is the Load a file card (the
+uploader and the sample toggle) and the figures say "None yet". After loading, the left column is the picture
+(the PD distribution, which filters the table, or decisions by sector, or the row editor) with its pill row;
+the right column holds the file card with the table filters, the dark panel with the portfolio summary and
+the rows with the downloads and the sheets (all loans, row editor, templates); the file line runs along the
+bottom.
+"""
+
+import hashlib
 import io
 import sys
 from pathlib import Path
@@ -11,43 +20,21 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 from src import cleaning  # noqa: E402
 
-X.page_start("batch")
-U.page_header(
-    "Batch scoring",
-    "Upload a CSV of applications in the raw SBA column layout or the CreditLens form layout. Every row is "
-    "validated, cleaned with the project's cleaning functions and scored with the same model.",
-    eyebrow="Portfolio of applications",
-)
+ui.page("Batch scoring", "Score a CSV of applications in the raw SBA layout or the form layout.",
+        eyebrow="Decide", heading="Every file, scored the same way.")
 
-with st.expander("File layouts, templates and sample files"):
-    st.markdown(
-        "**Raw SBA layout**: the columns of the source file SBAnational.csv. Required: "
-        + ", ".join(f"`{c}`" for c in U.RAW_REQUIRED)
-        + ". Optional: `LoanNr_ChkDgt`, `Name`, `City`, `Zip`, `DisbursementDate`. Currency may be text such as "
-        "`$60,000.00` and dates may be in the source format (`28-Feb-97`) or ISO format. Outcome columns are ignored."
-    )
-    st.markdown("**Form layout**: one column per field of the Score a loan form.")
-    st.dataframe(pd.DataFrame({"Column": list(U.FORM_COLUMN_HELP), "Meaning": list(U.FORM_COLUMN_HELP.values())}),
-                 hide_index=True, use_container_width=True)
-    c1, c2, c3, c4 = st.columns(4)
-    for col, path, label in [
-        (c1, U.TEMPLATE_FORM_PATH, "Form template"),
-        (c2, U.SAMPLE_FORM_PATH, "Sample: form layout"),
-        (c3, U.TEMPLATE_RAW_PATH, "Raw template"),
-        (c4, U.SAMPLE_RAW_PATH, "Sample: raw layout"),
-    ]:
-        if path.exists():
-            col.download_button(label, path.read_bytes(), file_name=path.name, mime="text/csv",
-                                use_container_width=True, key=f"dl_{path.stem}")
-
-uploaded = st.file_uploader("Upload a CSV file of loan applications", type=["csv"],
-                            help="Up to 50 MB; one loan per row.")
-use_sample = st.toggle("Use the 50-loan sample file instead", value=st.query_params.get("sample") == "1",
-                       help="Scores app/assets/sample_loans_raw_layout.csv, 50 loans from the held-out test set.")
+t, d = U.threshold(), U.decline_threshold()
+LAYOUT = {"raw": "Raw SBA layout", "form": "Form layout"}
+TEMPLATES = [
+    (U.TEMPLATE_FORM_PATH, "Form template"),
+    (U.SAMPLE_FORM_PATH, "Sample: form layout"),
+    (U.TEMPLATE_RAW_PATH, "Raw template"),
+    (U.SAMPLE_RAW_PATH, "Sample: raw layout"),
+]
 
 
 @st.cache_data(show_spinner=False)
@@ -55,33 +42,102 @@ def read_csv(data: bytes) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(data), keep_default_na=False, na_values=[""], low_memory=False)
 
 
-if uploaded is not None:
-    data, name = uploaded.getvalue(), uploaded.name
-elif use_sample:
-    data, name = U.SAMPLE_RAW_PATH.read_bytes(), U.SAMPLE_RAW_PATH.name
-else:
-    U.html(f'<div class="cl-card cl-empty">{U.icon("upload", 40, "#8D99AE")}<h4 style="margin-top:12px">'
-           "Waiting for a file</h4><p>Upload a CSV above, or switch on the sample file to see a scored portfolio.</p></div>")
+def fail(message: str) -> None:
+    """Drop the file and show the upload card again with one sentence saying what to do."""
+    st.session_state["batch_error"] = message
+    st.session_state.pop("batch_src", None)
+    st.session_state.pop("batch", None)
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Sheets
+# ---------------------------------------------------------------------------
+
+@st.dialog("Templates and layouts", width="large")
+def templates_sheet() -> None:
+    U.html(ui.note("Raw SBA layout: the columns of SBAnational.csv. Required: " + ", ".join(U.RAW_REQUIRED)
+                   + ". Currency may be text such as $60,000.00; outcome columns are ignored.", "accent"))
+    U.html(ui.note("Form layout: one column per field of the Score a loan form, listed below.", "accent"))
+    U.html(ui.note("Every row is validated and cleaned with the project's cleaning functions; rows that fail are "
+                   "listed and left out. Edits to amount, guarantee, term or sector are cleaned and rescored at once.",
+                   "accent"))
+    cols = st.columns(2)
+    for k, (path, label) in enumerate(TEMPLATES):
+        if path.exists():
+            cols[k % 2].download_button(label, path.read_bytes(), file_name=path.name, mime="text/csv",
+                                        use_container_width=True, key=f"dl_{path.stem}")
+    st.dataframe(pd.DataFrame({"Column": list(U.FORM_COLUMN_HELP), "Meaning": list(U.FORM_COLUMN_HELP.values())}),
+                 hide_index=True, use_container_width=True, height=220)
+
+
+# ---------------------------------------------------------------------------
+# Before a file is loaded: the upload card in the middle
+# ---------------------------------------------------------------------------
+
+src = st.session_state.get("batch_src")
+if src is None:
+    error = st.session_state.pop("batch_error", None)
+    ui.kpis([
+        ("Loans scored", "None yet", "No file loaded"),
+        ("Approval rate", "None yet", f"PD below {t:.0%}"),
+        ("Referred", "None yet", f"PD {t:.0%} to {d:.0%}"),
+        ("Declined", "None yet", f"PD {d:.0%} and above"),
+    ])
+    with st.container(key="two"):
+        left, right = st.columns([1.2, 1], gap="medium")
+        with left:
+            with st.container(key="batch_upload_controls"):
+                U.html(ui.card_html("Load a file", "Upload a CSV with one loan per row, or use the 50-loan sample.", ""))
+                if error:
+                    U.html(ui.note(error, "bad"))
+                uploaded = st.file_uploader("Upload CSV", type=["csv"], help="Up to 50 MB; one loan per row.",
+                                            key="batch_upload")
+                use_sample = st.toggle("Use the 50-loan sample", value=st.query_params.get("sample") == "1",
+                                       help="Scores app/assets/sample_loans_raw_layout.csv, 50 loans from the "
+                                            "held-out test set.")
+        with right:
+            ui.card("Portfolio summary", "Expected value and loss of the scored file.",
+                    ui.empty("The summary appears once a file is scored."), kind="panel")
+            with st.container(key="sheet_rows"):
+                U.html(ui.card_html("Templates", "Download a template to fill in.", ""))
+                if ui.row_button({"a": "Templates and layouts", "a_small": "Four CSV files"}, key="batch_templates"):
+                    st.session_state["batch_sheet"] = "templates"
+    ui.strip([
+        ui.strip_title("Layouts"),
+        '<span class="l">Raw SBA layout or form layout · one loan per row · up to 50 MB</span>',
+        ui.strip_value("approve below", ui.pct(t)),
+        ui.strip_value("decline from", ui.pct(d)),
+    ])
+    if uploaded is not None:
+        st.session_state["batch_src"] = {"data": uploaded.getvalue(), "name": uploaded.name}
+        st.rerun()
+    if use_sample:
+        st.session_state["batch_src"] = {"data": U.SAMPLE_RAW_PATH.read_bytes(), "name": U.SAMPLE_RAW_PATH.name,
+                                         "sample": True}
+        st.rerun()
+    if st.session_state.pop("batch_sheet", None) == "templates":
+        templates_sheet()
     st.stop()
 
+# ---------------------------------------------------------------------------
+# Read, validate, clean and score (once per file)
+# ---------------------------------------------------------------------------
+
+data, name = src["data"], src["name"]
 try:
     df = read_csv(data)
 except Exception as exc:  # noqa: BLE001
-    st.error(f"The file could not be read as CSV ({type(exc).__name__}).")
-    st.stop()
+    fail(f"The file could not be read as CSV ({type(exc).__name__}). Check that it is a comma-separated file.")
 df.columns = [str(c).strip() for c in df.columns]
 if df.empty:
-    st.error("The file has no rows.")
-    st.stop()
+    fail("The file has no rows. Add one loan per row and upload it again.")
 
 layout = U.detect_layout(df)
 if layout is None:
     miss = U.missing_columns(df)
-    st.error("The columns do not match either layout. Missing for the raw layout: "
-             + ", ".join(miss["raw"]) + ". Missing for the form layout: " + ", ".join(miss["form"]) + ".")
-    st.stop()
-
-import hashlib  # noqa: E402
+    fail("The columns do not match either layout. Missing for the raw layout: " + ", ".join(miss["raw"])
+         + ". Missing for the form layout: " + ", ".join(miss["form"]) + ".")
 
 signature = hashlib.sha1(data).hexdigest() + layout
 batch = st.session_state.get("batch")
@@ -97,15 +153,13 @@ if batch is None or batch["sig"] != signature:
             ids = df["LoanID"] if "LoanID" in df else pd.Series(np.arange(1, len(df) + 1))
     except Exception as exc:  # noqa: BLE001
         progress.empty()
-        st.error(f"The file could not be cleaned: {exc}")
-        st.stop()
+        fail(f"The file could not be cleaned ({exc}). Compare it with the templates.")
 
     reasons = U.validate_clean(clean)
     valid = (reasons == "").to_numpy()
     if not valid.any():
         progress.empty()
-        st.error("No row passed validation.")
-        st.stop()
+        fail("No row passed validation. Compare the file with the templates.")
 
     progress.progress(0.2, text="Building features")
     model = U.load_model()
@@ -175,58 +229,49 @@ if edits:
     batch["version"] += 1
     editor_key = f"batch_editor_{batch['version']}"
 
-st.success(f"Read {batch['n_rows']:,} rows from {name} in the {'raw SBA' if layout == 'raw' else 'form'} layout. "
-           f"{len(out):,} rows passed validation.")
-if len(batch["bad"]):
-    st.warning(f"{len(batch['bad']):,} rows cannot be scored and are left out.")
-    st.dataframe(batch["bad"], hide_index=True, use_container_width=True)
-
-t = U.threshold()
 approved = (out["decision"] == "Approve").to_numpy()
 counts = out["decision"].value_counts().reindex(["Approve", "Refer", "Decline"], fill_value=0)
-U.section_title("Portfolio summary", "grid")
-if batch["edited"]:
-    st.caption(f"{len(batch['edited']):,} loans edited in the table below; the summary includes the edits.")
-U.tiles([
-    {"label": "Loans scored", "value": f"{len(out):,}",
-     "sub": f"Approve {counts['Approve']:,}, refer {counts['Refer']:,}, decline {counts['Decline']:,}", "accent": U.COLOURS["navy"],
-     "help": "Rows that passed validation and were scored with the loaded model."},
-    {"label": "Approval rate", "value": f"{approved.mean():.1%}", "sub": f"PD below {t:.1%}", "accent": U.COLOURS["teal"],
-     "help": f"Loans with a probability of default below the approval threshold of {t:.1%}, divided by all scored loans."},
-    {"label": "Expected default rate", "value": f"{out.loc[approved, 'probability_of_default'].mean():.1%}" if approved.any() else "n/a",
-     "sub": "Average PD of approved loans", "accent": U.COLOURS["amber"],
-     "help": "Mean predicted probability of default of the approved loans."},
-    {"label": "Expected net value", "value": U.fmt_usd(out.loc[approved, "expected_net_value_usd"].sum()),
-     "sub": f"Expected loss {U.fmt_usd(out.loc[approved, 'expected_loss_usd'].sum())}", "accent": U.COLOURS["teal"],
-     "help": "Sum over approved loans of (1 - PD) x margin x disbursed minus PD x loss if charged off."},
-])
-
-# Histogram as clickable bars: a click filters the table to that PD range
+pd_range = st.session_state.get("batch_pd_range")
 BIN = 0.025
 edges = np.arange(0, 1 + BIN, BIN)
-hist, _ = np.histogram(out["probability_of_default"].clip(0, 0.99999), bins=edges)
-centres = edges[:-1] + BIN / 2
-pd_range = st.session_state.get("batch_pd_range")
-c1, c2, c3 = st.columns([1.5, 1, 1], gap="medium")
-with c1:
-    colours = []
-    for lo in edges[:-1]:
-        b = U.band_for(lo + BIN / 2)
-        sel = pd_range is not None and pd_range[0] <= lo < pd_range[1]
-        colours.append(U.COLOURS["navy"] if sel or pd_range is None else U.hex_rgba(U.COLOURS["navy"], 0.25))
-    fig = go.Figure()
-    for b in U.risk_bands():
-        fig.add_vrect(x0=b["min"] * 100, x1=min(b["max"], 1) * 100, fillcolor=b["colour"], opacity=0.10, line_width=0,
-                      layer="below")
-    fig.add_trace(go.Bar(x=centres * 100, y=hist, width=BIN * 100 * 0.92, marker=dict(color=colours),
-                         customdata=np.stack([edges[:-1] * 100, edges[1:] * 100], axis=1),
-                         hovertemplate="PD %{customdata[0]:.1f}% to %{customdata[1]:.1f}%<br>%{y} loans"
-                                       "<br>Click to filter the table<extra></extra>"))
-    fig.add_vline(x=t * 100, line_color=U.INK, line_dash="dot", annotation_text=f"threshold {t:.1%}",
-                  annotation_position="top right", annotation_font=dict(size=11, color=U.INK))
-    fig.update_layout(title="Distribution of probability of default", xaxis=dict(title="Probability of default (%)", range=[0, 100]),
-                      yaxis_title="Loans", barcornerradius=3, showlegend=False)
-    event = U.chart(fig, height=340, key=f"hist_{st.session_state.get('batch_hist_v', 0)}", on_select="rerun")
+COLUMN_ORDER = ["loan_id", "probability_of_default", "risk_band", "decision", "expected_net_value_usd",
+                "expected_loss_usd", "GrAppv", "Portion", "DisbursementGross", "Term", "Sector", "State", "Bank"]
+sectors = sorted(set(U.SECTOR_TO_NAICS) | set(out["Sector"]))
+COLUMN_CONFIG = {
+    "loan_id": "Loan",
+    "probability_of_default": st.column_config.ProgressColumn("PD", format="percent", min_value=0, max_value=1),
+    "risk_band": "Risk band", "decision": "Decision",
+    "Portion": st.column_config.NumberColumn("Guaranteed share", format="percent", min_value=0.0, max_value=1.0, step=0.05),
+    "GrAppv": st.column_config.NumberColumn("Approved (USD)", format="localized", min_value=1000, step=5000),
+    "DisbursementGross": st.column_config.NumberColumn("Disbursed (USD)", format="localized", min_value=1, step=5000),
+    "Term": st.column_config.NumberColumn("Term (months)", min_value=1, max_value=480, step=6),
+    "Sector": st.column_config.SelectboxColumn("Sector", options=sectors, required=True),
+    "expected_net_value_usd": st.column_config.NumberColumn("Expected net value (USD)", format="localized"),
+    "expected_loss_usd": st.column_config.NumberColumn("Expected loss (USD)", format="localized"),
+}
+
+
+# ---------------------------------------------------------------------------
+# Middle pictures
+# ---------------------------------------------------------------------------
+
+def picture_histogram() -> None:
+    """PD distribution as clickable bars: a click filters the table to that PD range."""
+    hist, _ = np.histogram(out["probability_of_default"].clip(0, 0.99999), bins=edges)
+    colours = [ui.CHART["accent"] if pd_range is None or pd_range[0] <= lo < pd_range[1] else ui.CHART["accent_soft"]
+               for lo in edges[:-1]]
+    fig = go.Figure(go.Bar(x=(edges[:-1] + BIN / 2) * 100, y=hist, width=BIN * 100 * 0.92, marker=dict(color=colours),
+                           customdata=np.stack([edges[:-1] * 100, edges[1:] * 100], axis=1),
+                           hovertemplate="PD %{customdata[0]:.1f}% to %{customdata[1]:.1f}%<br>%{y} loans"
+                                         "<br>Click to filter the table<extra></extra>"))
+    fig.add_vline(x=t * 100, line_color=ui.CHART["ink"], line_dash="dot", line_width=1.5)
+    fig.add_annotation(x=t * 100, y=1.0, yref="paper", text=f"approve below {t:.0%}", showarrow=False, xanchor="left",
+                       xshift=6, yshift=-6, font=dict(size=12, color=ui.CHART["muted"]))
+    ui.chart_layout(fig, "PD distribution: click a bar to filter the table")
+    fig.update_layout(xaxis=dict(title="Probability of default (%)", range=[0, 100]), yaxis=dict(title="Loans"),
+                      showlegend=False)
+    with st.container(key="picture_fixed"):
+        event = U.chart(fig, height=400, key=f"hist_{st.session_state.get('batch_hist_v', 0)}", on_select="rerun")
     pts = list(event.selection.points) if event is not None and hasattr(event, "selection") else []
     sig = repr(pts)
     if pts and st.session_state.get("_batch_hist_seen") != sig:
@@ -234,79 +279,38 @@ with c1:
         k = int(pts[0].get("point_index", pts[0].get("point_number", 0)))
         st.session_state["batch_pd_range"] = (float(edges[k]), float(edges[k + 1]))
         st.rerun()
-with c2:
-    bands = U.risk_bands()
-    band_counts = out["risk_band"].value_counts().reindex([b["name"] for b in bands], fill_value=0)
-    fig = go.Figure(go.Pie(labels=band_counts.index, values=band_counts.values, hole=0.62, sort=False,
-                           marker=dict(colors=[b["colour"] for b in bands], line=dict(color="#FFFFFF", width=3)),
-                           textinfo="percent", textfont=dict(size=12),
-                           hovertemplate="<b>%{label}</b><br>%{value} loans, %{percent}<extra></extra>"))
-    fig.add_annotation(text=f"<b>{len(out):,}</b><br><span style='font-size:11px'>loans</span>", showarrow=False,
-                       font=dict(size=20, color=U.INK))
-    fig.update_layout(title="Risk bands", showlegend=True, margin=dict(l=8, r=8, t=44, b=8),
-                      legend=dict(orientation="h", y=-0.05, yanchor="top", x=0.5, xanchor="center"))
-    U.chart(fig, height=340, key="donut")
-with c3:
-    fig = go.Figure(go.Pie(labels=counts.index, values=counts.values, hole=0.62, sort=False,
-                           marker=dict(colors=[U.DECISION_COLOURS[k] for k in counts.index], line=dict(color="#FFFFFF", width=3)),
-                           textinfo="percent", textfont=dict(size=12),
-                           customdata=[out.loc[out["decision"] == k, "expected_net_value_usd"].sum() for k in counts.index],
-                           hovertemplate="<b>%{label}</b><br>%{value} loans, %{percent}<br>Expected value "
-                                         "USD %{customdata:,.0f}<extra></extra>"))
-    fig.add_annotation(text=f"<b>{approved.mean():.0%}</b><br><span style='font-size:11px'>approved</span>", showarrow=False,
-                       font=dict(size=20, color=U.INK))
-    fig.update_layout(title="Decisions", showlegend=True, margin=dict(l=8, r=8, t=44, b=8),
-                      legend=dict(orientation="h", y=-0.05, yanchor="top", x=0.5, xanchor="center"))
-    U.chart(fig, height=340, key="decision_donut")
 
-U.section_title("Scored loans", "file")
-f1, f2, f3 = st.columns([1.2, 1.2, 1.3])
-dec_filter = f1.multiselect("Decision", ["Approve", "Refer", "Decline"], key="batch_dec",
-                            placeholder="All decisions")
-band_filter = f2.multiselect("Risk band", [b["name"] for b in U.risk_bands()], key="batch_band", placeholder="All bands")
-search = f3.text_input("Search sector, state or bank", key="batch_search", placeholder="For example Retail or FL")
-mask = pd.Series(True, index=out.index)
-if dec_filter:
-    mask &= out["decision"].isin(dec_filter)
-if band_filter:
-    mask &= out["risk_band"].isin(band_filter)
-if search:
-    q = search.strip().lower()
-    mask &= (out["Sector"].str.lower().str.contains(q, regex=False) | out["State"].str.lower().str.contains(q, regex=False)
-             | out["Bank"].str.lower().str.contains(q, regex=False))
-if pd_range is not None:
-    mask &= (out["probability_of_default"] >= pd_range[0]) & (out["probability_of_default"] < pd_range[1])
-    r1, r2 = st.columns([5, 1], vertical_alignment="center")
-    r1.markdown(f'<div class="cl-filterbar"><span class="cl-filter-label">Filtered:</span>'
-                f'{U.chip(f"PD {pd_range[0]:.1%} to {pd_range[1]:.1%}", U.COLOURS["navy"])}</div>', unsafe_allow_html=True)
-    if r2.button("Clear", key="batch_clear_range", icon=":material/filter_alt_off:", use_container_width=True):
-        st.session_state.pop("batch_pd_range", None)
-        st.session_state["batch_hist_v"] = st.session_state.get("batch_hist_v", 0) + 1
-        st.rerun()
-view = out[mask]
-st.session_state["batch_view_index"] = list(view.index)
-sectors = sorted(set(U.SECTOR_TO_NAICS) | set(out["Sector"]))
-st.data_editor(
-    view, key=editor_key, hide_index=True, use_container_width=True, num_rows="fixed",
-    height=min(38 * len(view) + 40, 520), disabled=[c for c in view.columns if c not in EDITABLE],
-    column_order=["loan_id", "probability_of_default", "risk_band", "decision", "expected_net_value_usd",
-                  "expected_loss_usd", "GrAppv", "Portion", "DisbursementGross", "Term", "Sector", "State", "Bank"],
-    column_config={
-        "loan_id": "Loan",
-        "probability_of_default": st.column_config.ProgressColumn("PD", format="percent", min_value=0, max_value=1),
-        "risk_band": "Risk band", "decision": "Decision",
-        "Portion": st.column_config.NumberColumn("Guaranteed share", format="percent", min_value=0.0, max_value=1.0, step=0.05),
-        "GrAppv": st.column_config.NumberColumn("Approved (USD)", format="localized", min_value=1000, step=5000),
-        "DisbursementGross": st.column_config.NumberColumn("Disbursed (USD)", format="localized", min_value=1, step=5000),
-        "Term": st.column_config.NumberColumn("Term (months)", min_value=1, max_value=480, step=6),
-        "Sector": st.column_config.SelectboxColumn("Sector", options=sectors, required=True),
-        "expected_net_value_usd": st.column_config.NumberColumn("Expected net value (USD)", format="localized"),
-        "expected_loss_usd": st.column_config.NumberColumn("Expected loss (USD)", format="localized"),
-    },
-)
-st.caption(f"Showing {len(view):,} of {len(out):,} loans. Click a column header to sort. Edit the approved amount, "
-           "guarantee, disbursed amount, term or sector of any loan: it is cleaned and rescored at once, and the tiles "
-           "and charts above follow. Click a bar of the histogram to filter by PD.")
+
+def picture_sectors(focus: str) -> None:
+    """Decisions by sector, stacked, with the chosen decision in its tone and the others quiet."""
+    by = (out.groupby(["Sector", "decision"]).size().unstack(fill_value=0)
+          .reindex(columns=["Approve", "Refer", "Decline"], fill_value=0))
+    by = by.loc[by.sort_values([focus, "Approve"]).index].tail(10)
+    word = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}
+    quiet = {"Approve": ui.CHART["hairline"], "Refer": ui.CHART["canvas"], "Decline": ui.CHART["accent_soft"]}
+    fig = go.Figure()
+    for k in [focus] + [x for x in ["Approve", "Refer", "Decline"] if x != focus]:
+        fig.add_trace(go.Bar(y=[str(x)[:30] for x in by.index], x=by[k], name=word[k], orientation="h",
+                             marker=dict(color=ui.tone_colour(word[k]) if k == focus else quiet[k],
+                                         line=dict(color=ui.CHART["hairline"], width=0 if k == focus else 1)),
+                             hovertemplate=f"%{{y}}<br>{word[k]}: %{{x}} loans<extra></extra>"))
+    ui.chart_layout(fig, f"Decisions by sector: {word[focus].lower()} loans")
+    fig.update_layout(barmode="stack", xaxis=dict(title="Loans"), yaxis=dict(title=""), margin=dict(l=12))
+    with st.container(key="picture_fixed"):
+        U.chart(fig, height=400, key="batch_picture")
+
+
+# ---------------------------------------------------------------------------
+# The board
+# ---------------------------------------------------------------------------
+
+chosen = st.session_state.get("batch_pick", "loans")
+if chosen not in ("loans", "approved", "referred", "declined"):
+    chosen = "loans"
+editing = bool(st.session_state.get("batch_edit"))
+n_edited = len(batch["edited"])
+PICKS = [("loans", "PD distribution"), ("approved", "Approved by sector"), ("referred", "Referred by sector"),
+         ("declined", "Declined by sector")]
 
 
 def portfolio_memo() -> str:
@@ -321,15 +325,15 @@ def portfolio_memo() -> str:
     band_rows = "".join(f"<tr><td>{k}</td><td>{v:,}</td><td>{v / len(out):.1%}</td></tr>" for k, v in bands.items())
     meta = U.load_metadata()
     return f"""<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><title>CreditLens portfolio memo</title>
-<style>body{{font-family:Arial,sans-serif;color:#0B1F3A;margin:0;background:#F7F9FC}}
-.page{{max-width:820px;margin:24px auto;background:#fff;border:1px solid #E3E8EF;border-radius:14px;padding:32px 40px}}
-h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#5B6B82;margin:24px 0 8px}}
-.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}} .k{{border:1px solid #E3E8EF;border-radius:10px;padding:10px}}
-.k span{{display:block;font-size:11px;color:#5B6B82;text-transform:uppercase}} .k b{{font-size:18px}}
-table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid #EEF2F7}}
-th{{color:#5B6B82}} footer{{margin-top:22px;font-size:11px;color:#8D99AE}}
+<style>body{{font-family:Arial,sans-serif;color:#142f43;margin:0;background:#f1f5f7}}
+.page{{max-width:820px;margin:24px auto;background:#fff;border:1px solid #d9e3e8;border-radius:16px;padding:32px 40px}}
+h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#5f7180;margin:24px 0 8px}}
+.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}} .k{{border:1px solid #d9e3e8;border-radius:10px;padding:10px}}
+.k span{{display:block;font-size:11px;color:#5f7180;text-transform:uppercase}} .k b{{font-size:18px}}
+table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid #d9e3e8}}
+th{{color:#5f7180}} footer{{margin-top:22px;font-size:11px;color:#5f7180}}
 @page{{size:A4;margin:16mm}} @media print{{body{{background:#fff}} .page{{border:none;margin:0}}}}</style></head><body><div class="page">
-<h1>Portfolio memo: {_html.escape(name)}</h1><div style="color:#5B6B82;font-size:13px">{_dt.date.today().strftime('%d %B %Y')},
+<h1>Portfolio memo: {_html.escape(name)}</h1><div style="color:#5f7180;font-size:13px">{_dt.date.today().strftime('%d %B %Y')},
 model {_html.escape(str(meta.get('model_name', 'n/a')))}, approve below {t:.1%}</div>
 <h2>Summary</h2><div class="grid">
 <div class="k"><span>Loans scored</span><b>{len(out):,}</b></div><div class="k"><span>Approval rate</span><b>{approved.mean():.1%}</b></div>
@@ -342,10 +346,145 @@ model {_html.escape(str(meta.get('model_name', 'n/a')))}, approve below {t:.1%}<
 <footer>CreditLens is a decision-support tool; every referral and decline is reviewed by a credit officer.</footer></div></body></html>"""
 
 
-d1, d2 = st.columns(2)
-d1.download_button("Download scored CSV", out.to_csv(index=False).encode("utf-8"),
-                   file_name=f"creditlens_scored_{Path(name).stem}.csv", mime="text/csv", type="primary", key="dl_scored",
-                   use_container_width=True, icon=":material/download:")
-d2.download_button("Download portfolio memo", portfolio_memo().encode("utf-8"),
-                   file_name=f"creditlens_portfolio_memo_{Path(name).stem}.html", mime="text/html", key="dl_memo",
-                   use_container_width=True, icon=":material/description:")
+ui.kpis([
+    ("Loans scored", f"{len(out):,}", f"Of {batch['n_rows']:,} rows" + (f", {n_edited:,} edited" if n_edited else "")),
+    ("Approval rate", ui.pct(approved.mean()), f"{counts['Approve']:,} approved"),
+    ("Referred", f"{counts['Refer']:,}", f"PD {t:.0%} to {d:.0%}"),
+    ("Declined", f"{counts['Decline']:,}", f"PD {d:.0%} and above"),
+])
+
+with st.container(key="two"):
+    left, right = st.columns([1.2, 1], gap="medium")
+
+    # The right column first: its filters decide the table that the picture, the editor and the sheets show
+    with right:
+        with st.container(key="batch_controls"):
+            U.html(ui.card_html("File", "Filter the table of scored loans.", ""))
+            if ui.row_button({"a": "Sample, 50 loans" if src.get("sample") else name[:26],
+                              "a_small": "Load another file"}, key="batch_reset"):
+                for k in ["batch_src", "batch", "batch_pd_range", "batch_pick", "batch_edit"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+            passed = {"a": "Rows passed validation", "b": f"{len(out):,} of {batch['n_rows']:,}"}
+            if len(batch["bad"]):
+                if ui.row_button({**passed, "a_small": f"{len(batch['bad']):,} left out: see why"}, key="batch_bad"):
+                    st.session_state["batch_sheet"] = "bad"
+                U.html(ui.rows([{"a": "Layout detected", "b": LAYOUT[layout]}]))
+            else:
+                U.html(ui.rows([passed, {"a": "Layout detected", "b": LAYOUT[layout]}]))
+            U.html(ui.eyebrow("Decisions in the table"))
+            f1, f2 = st.columns(2)
+            dec_filter = f1.multiselect("Decision", ["Approve", "Refer", "Decline"], key="batch_dec",
+                                        placeholder="All decisions", label_visibility="collapsed")
+            band_filter = f2.multiselect("Risk band", [b["name"] for b in U.risk_bands()], key="batch_band",
+                                         placeholder="All bands", label_visibility="collapsed")
+            if pd_range is not None:
+                s1, s2 = st.columns([1.4, 1])
+                search = s1.text_input("Search", key="batch_search", placeholder="Sector, state or bank",
+                                       label_visibility="collapsed")
+                if s2.button(f"Clear PD {pd_range[0]:.1%} to {pd_range[1]:.1%}", key="batch_clear_range",
+                             use_container_width=True, help="Remove the PD range chosen on the histogram."):
+                    st.session_state.pop("batch_pd_range", None)
+                    st.session_state["batch_hist_v"] = st.session_state.get("batch_hist_v", 0) + 1
+                    st.rerun()
+            else:
+                search = st.text_input("Search", key="batch_search", placeholder="Sector, state or bank",
+                                       label_visibility="collapsed")
+            mask = pd.Series(True, index=out.index)
+            if dec_filter:
+                mask &= out["decision"].isin(dec_filter)
+            if band_filter:
+                mask &= out["risk_band"].isin(band_filter)
+            if search:
+                q = search.strip().lower()
+                mask &= (out["Sector"].str.lower().str.contains(q, regex=False)
+                         | out["State"].str.lower().str.contains(q, regex=False)
+                         | out["Bank"].str.lower().str.contains(q, regex=False))
+            if pd_range is not None:
+                mask &= (out["probability_of_default"] >= pd_range[0]) & (out["probability_of_default"] < pd_range[1])
+            view = out[mask]
+            st.session_state["batch_view_index"] = list(view.index)
+            st.caption(f"Showing {len(view):,} of {len(out):,} loans in the table.")
+
+        ui.card("Portfolio summary", f"{counts['Approve']:,} approved, {counts['Refer']:,} referred, "
+                f"{counts['Decline']:,} declined.", ui.rows([
+                    {"a": "Expected net value", "a_small": "Approved loans", "b": ui.money(out.loc[approved, "expected_net_value_usd"].sum())},
+                    {"a": "Mean PD", "a_small": "All scored loans", "b": ui.pct(out["probability_of_default"].mean())},
+                    {"a": "Expected loss avoided", "a_small": "Referred and declined", "b": ui.money(out.loc[~approved, "expected_loss_usd"].sum())},
+                ]), kind="panel")
+
+        with st.container(key="sheet_rows"):
+            U.html(ui.card_html("Downloads and sheets", None, ""))
+            with st.container(key="row_dl_scored"):
+                st.download_button("Download CSV", out.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"creditlens_scored_{Path(name).stem}.csv", mime="text/csv", type="primary",
+                                   key="dl_scored", use_container_width=True)
+            with st.container(key="row_dl_memo"):
+                st.download_button("Download portfolio memo", portfolio_memo().encode("utf-8"),
+                                   file_name=f"creditlens_portfolio_memo_{Path(name).stem}.html", mime="text/html",
+                                   key="dl_memo", use_container_width=True)
+            if ui.row_button({"a": "See all loans", "a_small": f"{len(view):,} in the table"}, key="batch_all"):
+                st.session_state["batch_sheet"] = "all"
+            if ui.row_button({"a": "Show the chart" if editing else "Edit rows",
+                              "a_small": "Back to the picture" if editing else "Amount, guarantee, term, sector"},
+                             key="batch_edit_rows", chosen=editing):
+                st.session_state["batch_edit"] = not editing
+                st.rerun()
+            if ui.row_button({"a": "Templates and layouts", "a_small": "Four CSV files"}, key="batch_templates"):
+                st.session_state["batch_sheet"] = "templates"
+
+    with left:
+        if editing:
+            with st.container(key="picture_fixed"):
+                st.data_editor(view, key=editor_key, hide_index=True, use_container_width=True, num_rows="fixed",
+                               height=400, disabled=[c for c in view.columns if c not in EDITABLE],
+                               column_order=COLUMN_ORDER, column_config=COLUMN_CONFIG)
+        elif chosen == "loans":
+            picture_histogram()
+        else:
+            picture_sectors({"approved": "Approve", "referred": "Refer", "declined": "Decline"}[chosen])
+
+        with st.container(key="pick_buttons"):
+            cols = st.columns(len(PICKS))
+            for col, (key, label) in zip(cols, PICKS):
+                if col.button(label, key=f"btn_figures_{key}",
+                              type="primary" if key == chosen and not editing else "secondary",
+                              use_container_width=True):
+                    st.session_state["batch_pick"] = key
+                    st.session_state.pop("batch_edit", None)
+                    st.rerun()
+
+ui.strip([
+    ui.strip_title("File"),
+    ui.strip_value("rows passed validation", f"{len(out):,} of {batch['n_rows']:,}"),
+    ui.strip_value("edited", f"{n_edited:,}"),
+    f'<span class="l">{ui.esc("Sample, 50 loans" if src.get("sample") else name)} · {LAYOUT[layout]} · '
+    f'approve below {t:.1%} · decline from {d:.1%}</span>',
+])
+
+
+# ---------------------------------------------------------------------------
+# Sheets on the loaded file
+# ---------------------------------------------------------------------------
+
+@st.dialog("Scored loans", width="large")
+def all_sheet() -> None:
+    U.html(ui.note(f"Showing {len(view):,} of {len(out):,} loans with the filters of the File card. "
+                   "Use Edit rows to change a loan and rescore it.", "accent"))
+    st.dataframe(view, hide_index=True, use_container_width=True, height=440, column_order=COLUMN_ORDER,
+                 column_config=COLUMN_CONFIG)
+
+
+@st.dialog("Rows left out", width="large")
+def bad_sheet() -> None:
+    U.html(ui.note(f"{len(batch['bad']):,} rows cannot be scored and are left out. Fix them and upload the file again.", "warning"))
+    st.dataframe(batch["bad"], hide_index=True, use_container_width=True, height=360)
+
+
+sheet = st.session_state.pop("batch_sheet", None)
+if sheet == "all":
+    all_sheet()
+elif sheet == "bad":
+    bad_sheet()
+elif sheet == "templates":
+    templates_sheet()

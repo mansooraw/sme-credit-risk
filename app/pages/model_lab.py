@@ -1,5 +1,9 @@
-"""Model lab: the final and comparison models side by side on ROC, precision-recall and calibration, plus tuning."""
+"""Model lab: the figure strip, the curves of the final and the comparison model on the same held-out loans on
+the left (ROC, precision-recall or calibration; click the ROC curve to move the threshold) with its pill row, and
+on the right the shared threshold, the two models at that threshold in the dark panel and the reasons for the
+choice in rows that open sheets."""
 
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -12,28 +16,22 @@ import streamlit as st  # noqa: E402
 from sklearn.calibration import calibration_curve  # noqa: E402
 from sklearn.metrics import auc, precision_recall_curve, roc_curve  # noqa: E402
 
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 
-X.page_start("lab")
-U.page_header(
-    "Model lab",
-    "The final model against the comparison model on the same held-out loans. Move the threshold, or click a point on "
-    "the ROC curve, and the marker moves along both curves.",
-    eyebrow="Model comparison",
-)
+ui.page("Model lab", "Both models on the same held-out loans; click the ROC curve to move the threshold.", eyebrow="Model",
+        heading="Two models, one test.")
 meta = U.load_metadata()
-slot = st.empty()
-slot.markdown(U.skeleton(300, "Scoring the held-out loans with both models"), unsafe_allow_html=True)
 scores, source = U.model_lab_scores(U.model_version_key())
-slot.empty()
 y = scores["Default"].to_numpy()
 final_name = str(meta.get("model_name", "Final model"))
 comp_name = "Logistic regression" if U.load_comparison_model() is not None else None
-MODELS = [("p", final_name, U.COLOURS["teal"])]
+MODELS = [("p", final_name, ui.CHART["accent"])]
 if "p_comp" in scores:
-    MODELS.append(("p_comp", f"Comparison: {comp_name}", U.COLOURS["navy"]))
+    MODELS.append(("p_comp", comp_name or "Comparison model", ui.CHART["ink"]))
 MAX_POINTS = 500
+HEIGHT = 400
+STEP = 0.005
 
 
 @st.cache_data(show_spinner=False)
@@ -59,34 +57,42 @@ def point_at(col: str, t: float) -> dict:
 
 
 cv = {k: curves(U.model_version_key(), k) for k, *_ in MODELS}
-t = U.threshold_slider("Threshold (probability of default)", key="thr_lab")
+t = float(np.clip(round(U.shared_threshold() / STEP) * STEP, 0.01, 0.99))  # the slider below shows the same value
 pts = {k: point_at(k, t) for k, *_ in MODELS}
+has_comp = "p_comp" in cv
+chosen = st.session_state.get("lab_pick", "final")
 
-U.tiles([{"label": name.split(":")[-1].strip()[:26], "value": f"{cv[k]['auc']:.3f}", "accent": colour,
-          "sub": f"ROC-AUC; PR-AUC {cv[k]['pr_auc']:.3f}; recall {pts[k]['tpr']:.1%} at {t:.3f}",
-          "help": "ROC-AUC and PR-AUC computed in the app on the held-out loans; recall is the share of defaults with PD at or "
-                  "above the selected threshold."} for k, name, colour in MODELS], cols=len(MODELS))
 
-c1, c2 = st.columns(2, gap="large")
-with c1:
+def marker(k, x, yv, colour, extra=""):
+    return go.Scatter(x=[x], y=[yv], mode="markers", showlegend=False,
+                      marker=dict(size=11, color=colour, line=dict(color="#ffffff", width=2)),
+                      hovertemplate=f"Threshold {t:.3f}<br>%{{x:.1%}}, %{{y:.1%}}{extra}<extra></extra>")
+
+
+# ---------------------------------------------------------------------------
+# The middle pictures
+# ---------------------------------------------------------------------------
+
+def picture_roc():
+    focus = "p_comp" if chosen == "comparison" and has_comp else "p"
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random", line=dict(color=U.COLOURS["grey"], dash="dot", width=1.3),
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random", line=dict(color=ui.CHART["hairline"], dash="dash", width=1.5),
                              hoverinfo="skip"))
     for k, name, colour in MODELS:
         c = cv[k]
-        fig.add_trace(go.Scatter(x=c["fpr"], y=c["tpr"], mode="lines+markers", name=f"{name.split(':')[-1].strip()} ({c['auc']:.3f})",
-                                 line=dict(color=colour, width=3), marker=dict(size=4, opacity=0.0),
+        fig.add_trace(go.Scatter(x=c["fpr"], y=c["tpr"], mode="lines+markers", name=f"{name} ({c['auc']:.3f})",
+                                 line=dict(color=colour, width=3 if k == focus else 1.8), marker=dict(size=4, opacity=0.0),
                                  customdata=c["thr"],
-                                 hovertemplate="Threshold %{customdata:.3f}<br>False positive rate %{x:.1%}"
-                                               "<br>True positive rate %{y:.1%}<br>Click to use this threshold<extra>" + name.split(":")[-1].strip() + "</extra>"))
+                                 hovertemplate="Threshold %{customdata:.3f}<br>Repaid loans declined %{x:.1%}"
+                                               "<br>Defaults caught %{y:.1%}<br>Click to use this threshold<extra>" + name + "</extra>"))
     for k, name, colour in MODELS:
-        fig.add_trace(go.Scatter(x=[pts[k]["fpr"]], y=[pts[k]["tpr"]], mode="markers", showlegend=False,
-                                 marker=dict(size=15, color=colour, symbol="circle", line=dict(color="#FFFFFF", width=3)),
-                                 hovertemplate=f"Threshold {t:.3f}<br>FPR %{{x:.1%}}<br>TPR %{{y:.1%}}<extra></extra>"))
-    fig.update_layout(title="ROC curve", xaxis=dict(title="False positive rate (good loans not approved)", range=[0, 1]),
-                      yaxis=dict(title="True positive rate (defaults stopped)", range=[0, 1.02]), clickmode="event+select",
-                      legend=dict(y=1.04), margin=dict(l=8, r=8, t=90, b=40), transition=dict(duration=450, easing="cubic-in-out"))
-    event = U.chart(fig, height=430, key=f"lab_roc_{st.session_state.get('lab_v', 0)}", on_select="rerun")
+        fig.add_trace(marker(k, pts[k]["fpr"], pts[k]["tpr"], colour))
+    ui.chart_layout(fig, "Defaults caught against repaid loans declined")
+    fig.update_layout(xaxis=dict(title="Share of repaid loans declined (false positive rate)", tickformat=".0%", range=[0, 1]),
+                      yaxis=dict(title="Share of defaults caught (recall)", tickformat=".0%", range=[0, 1.02]),
+                      clickmode="event+select")
+    with st.container(key="picture_fixed"):
+        event = U.chart(fig, height=HEIGHT, key=f"lab_roc_{st.session_state.get('lab_v', 0)}", on_select="rerun")
     sel = list(event.selection.points) if event is not None and hasattr(event, "selection") else []
     sig = repr(sel)
     if sel and st.session_state.get("_lab_seen") != sig:
@@ -97,66 +103,48 @@ with c1:
         if 0 <= curve_no < len(MODELS):
             thr = cv[MODELS[curve_no][0]]["thr"]
             if 0 <= idx < len(thr):
-                U.set_shared_threshold(float(np.clip(round(thr[idx] / 0.005) * 0.005, 0.01, 0.99)))
+                U.set_shared_threshold(float(np.clip(round(thr[idx] / STEP) * STEP, 0.01, 0.99)))
                 st.rerun()
-with c2:
+
+
+def picture_pr():
     fig = go.Figure()
     base = float(y.mean())
-    fig.add_hline(y=base, line_dash="dot", line_color=U.COLOURS["grey"], annotation_text=f"default rate {base:.1%}",
-                  annotation_position="bottom left", annotation_font=dict(size=11, color=U.MUTED))
+    fig.add_hline(y=base, line_dash="dot", line_color=ui.CHART["muted"], line_width=1.5, annotation_text=f"default rate {base:.1%}",
+                  annotation_position="bottom left", annotation_font=dict(size=12, color=ui.CHART["muted"]))
     for k, name, colour in MODELS:
         c = cv[k]
-        fig.add_trace(go.Scatter(x=c["rec"], y=c["prec"], mode="lines", name=f"{name.split(':')[-1].strip()} ({c['pr_auc']:.3f})",
-                                 line=dict(color=colour, width=3), customdata=np.append(c["thr_pr"], np.nan)[: len(c["rec"])],
+        fig.add_trace(go.Scatter(x=c["rec"], y=c["prec"], mode="lines", name=f"{name} ({c['pr_auc']:.3f})",
+                                 line=dict(color=colour, width=2.5), customdata=np.append(c["thr_pr"], np.nan)[: len(c["rec"])],
                                  hovertemplate="Threshold %{customdata:.3f}<br>Recall %{x:.1%}<br>Precision %{y:.1%}<extra></extra>"))
-        fig.add_trace(go.Scatter(x=[pts[k]["tpr"]], y=[pts[k]["precision"]], mode="markers", showlegend=False,
-                                 marker=dict(size=15, color=colour, line=dict(color="#FFFFFF", width=3)),
-                                 hovertemplate=f"Threshold {t:.3f}<br>Recall %{{x:.1%}}<br>Precision %{{y:.1%}}"
-                                               f"<br>Approval rate {pts[k]['approval']:.1%}<extra></extra>"))
-    fig.update_layout(title="Precision-recall curve", xaxis=dict(title="Recall on defaults", range=[0, 1]),
-                      yaxis=dict(title="Precision", range=[0, 1.02]), legend=dict(y=1.04),
-                      margin=dict(l=8, r=8, t=90, b=40), transition=dict(duration=450, easing="cubic-in-out"))
-    U.chart(fig, height=430, key="lab_pr")
+        fig.add_trace(marker(k, pts[k]["tpr"], pts[k]["precision"], colour, f"<br>Approval rate {pts[k]['approval']:.1%}"))
+    ui.chart_layout(fig, "Precision against recall")
+    fig.update_layout(xaxis=dict(title="Share of defaults caught (recall)", tickformat=".0%", range=[0, 1]),
+                      yaxis=dict(title="Share of flagged loans that default (precision)", tickformat=".0%", range=[0, 1.02]))
+    ui.picture(fig, height=HEIGHT)
 
-c1, c2 = st.columns(2, gap="large")
-with c1:
+
+def picture_calibration():
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode="lines", name="Perfect calibration",
-                             line=dict(color=U.COLOURS["grey"], dash="dot", width=1.3), hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Perfect calibration",
+                             line=dict(color=ui.CHART["hairline"], dash="dash", width=1.5), hoverinfo="skip"))
     for k, name, colour in MODELS:
         c = cv[k]
-        fig.add_trace(go.Scatter(x=c["cal_x"] * 100, y=c["cal_y"] * 100, mode="lines+markers",
-                                 name=f"{name.split(':')[-1].strip()} (Brier {c['brier']:.3f})",
-                                 line=dict(color=colour, width=3), marker=dict(size=9, line=dict(color="#FFFFFF", width=2)),
-                                 hovertemplate="Mean predicted PD %{x:.1f}%<br>Observed default rate %{y:.1f}%<extra></extra>"))
-    fig.update_layout(title="Calibration by decile of PD", xaxis=dict(title="Mean predicted PD (%)", range=[0, 100]),
-                      yaxis=dict(title="Observed default rate (%)", range=[0, 100]), legend=dict(y=1.02),
-                      margin=dict(l=8, r=8, t=120, b=40))
-    U.chart(fig, height=420, key="lab_cal")
-with c2:
-    tuning = U.records_table(meta.get("before_after_tuning"))
-    if tuning is not None and {"model", "test_roc_auc"} <= set(tuning.columns):
-        stage = next((c for c in ("version", "stage") if c in tuning.columns), None)
-        fig = go.Figure()
-        palette = [U.COLOURS["teal"], U.COLOURS["navy"], U.COLOURS["amber"], U.COLOURS["red"], U.COLOURS["grey"]]
-        for i, (m, g) in enumerate(tuning.groupby("model", sort=False)):
-            g = g.reset_index(drop=True)
-            labels = [str(s).capitalize() for s in (g[stage] if stage else range(len(g)))]
-            fig.add_trace(go.Scatter(x=labels, y=g["test_roc_auc"], mode="lines+markers+text", name=m,
-                                     line=dict(color=palette[i % 5], width=3), marker=dict(size=12, line=dict(color="#FFFFFF", width=2)),
-                                     text=[f"{v:.3f}" for v in g["test_roc_auc"]], textposition=["middle left", "middle right"][: len(g)],
-                                     textfont=dict(family=U.MONO_STACK, size=11, color=palette[i % 5]),
-                                     customdata=g.get("test_pr_auc", pd.Series([np.nan] * len(g))),
-                                     hovertemplate=f"<b>{m}</b> %{{x}}<br>Test ROC-AUC %{{y:.4f}}<br>Test PR-AUC %{{customdata:.4f}}<extra></extra>"))
-        fig.update_layout(title="Tuning: default against tuned (test ROC-AUC)",
-                          xaxis=dict(title="", showgrid=False, range=[-0.45, tuning.groupby("model").size().max() - 0.55]),
-                          yaxis=dict(title="Test ROC-AUC"), legend=dict(y=1.04), margin=dict(l=8, r=8, t=90, b=40))
-        U.chart(fig, height=420, key="lab_slope")
-    else:
-        st.info("No before and after tuning table in the metadata.")
+        fig.add_trace(go.Scatter(x=c["cal_x"], y=c["cal_y"], mode="lines+markers", name=f"{name} (Brier {c['brier']:.3f})",
+                                 line=dict(color=colour, width=2.5), marker=dict(size=7, line=dict(color="#ffffff", width=1.5)),
+                                 hovertemplate="Mean predicted PD %{x:.1%}<br>Observed default rate %{y:.1%}<extra></extra>"))
+    ui.chart_layout(fig, "Calibration by PD decile")
+    fig.update_layout(xaxis=dict(title="Mean predicted probability of default", tickformat=".0%", range=[0, 1]),
+                      yaxis=dict(title="Observed default rate", tickformat=".0%", range=[0, 1]))
+    ui.picture(fig, height=HEIGHT)
 
-# Why LightGBM: reasons computed from the metadata
-U.section_title("Why LightGBM", "check")
+
+PICTURES = {"final": picture_roc, "comparison": picture_roc, "recall": picture_pr, "precision": picture_calibration}
+
+# ---------------------------------------------------------------------------
+# Why LightGBM: reasons computed from the metadata, shown in the sheet
+# ---------------------------------------------------------------------------
+
 table = U.records_table(meta.get("comparison_table"))
 br = meta.get("business_results") or {}
 tech, biz = [], []
@@ -186,10 +174,10 @@ if path is not None:
 nv_m, nv_c, nv_a = (U.find_value(br, [k]) for k in ("net_value_model", "net_value_comparison_model", "net_value_approve_all"))
 lr_m, lr_c = U.find_value(br, ["loss_reduction_pct"]), U.find_value(br, ["loss_reduction_pct_comparison_model"])
 if nv_m is not None and nv_c is not None:
-    biz.append(f"Net value on the held-out portfolio {U.fmt_usd(float(nv_m))} against {U.fmt_usd(float(nv_c))} for the "
-               f"comparison model, a gain of {U.fmt_usd(float(nv_m) - float(nv_c))}.")
+    biz.append(f"Net value on the held-out portfolio {ui.money(float(nv_m))} against {ui.money(float(nv_c))} for the "
+               f"comparison model, a gain of {ui.money(float(nv_m) - float(nv_c))}.")
 if nv_a is not None and nv_m is not None:
-    biz.append(f"{U.fmt_usd(float(nv_m) - float(nv_a))} more than approving every loan ({U.fmt_usd(float(nv_a))}).")
+    biz.append(f"{ui.money(float(nv_m) - float(nv_a))} more than approving every loan ({ui.money(float(nv_a))}).")
 if lr_m is not None:
     biz.append(f"Avoids {U.fmt_metric(lr_m, pct=True)} of charge-off loss"
                + (f" against {U.fmt_metric(lr_c, pct=True)} for the comparison model." if lr_c is not None else "."))
@@ -201,10 +189,102 @@ if isinstance(stated, str):
     tech.insert(0, stated)
 elif isinstance(stated, list):
     tech = [str(s) for s in stated] + tech
-k1, k2 = st.columns(2, gap="large")
-k1.markdown(f'<div class="cl-card"><h4>{U.icon("chart", 18)} Technical reasons</h4><ul class="cl-reading">'
-            + "".join(f"<li>{s}</li>" for s in tech) + "</ul></div>", unsafe_allow_html=True)
-k2.markdown(f'<div class="cl-card"><h4>{U.icon("coins", 18, U.COLOURS["amber"])} Business reasons</h4><ul class="cl-reading">'
-            + "".join(f"<li>{s}</li>" for s in biz) + "</ul></div>", unsafe_allow_html=True)
-st.caption(f"Curves computed in the app on the {source}; the comparison table, tuning and business results come from the "
-           "model metadata.")
+tuning = U.records_table(meta.get("before_after_tuning"))
+tuned = None
+if tuning is not None and {"model", "test_roc_auc"} <= set(tuning.columns):
+    g = tuning[tuning["model"].astype(str).str.lower().str.contains("lightgbm")]
+    if len(g) >= 2:
+        tuned = f"Tuning moved the LightGBM test ROC-AUC from {g['test_roc_auc'].iloc[0]:.3f} to {g['test_roc_auc'].iloc[-1]:.3f}."
+
+# ---------------------------------------------------------------------------
+# The page: figure strip, curves left, threshold and results right, data strip
+# ---------------------------------------------------------------------------
+
+fin, comp = cv["p"], cv.get("p_comp")
+ui.kpis([
+    ("Final model AUC", f"{fin['auc']:.3f}", f"PR-AUC {fin['pr_auc']:.3f}"),
+    ("Comparison AUC", "n/a" if comp is None else f"{comp['auc']:.3f}", "Not loaded" if comp is None else f"PR-AUC {comp['pr_auc']:.3f}"),
+    ("Recall", ui.pct(pts["p"]["tpr"]), f"At threshold {t:.3f}"),
+    ("Precision", ui.pct(pts["p"]["precision"]), f"At threshold {t:.3f}"),
+])
+
+
+def trained(key: str) -> str:
+    p = U.artefact_path(key)
+    if key == "model" and meta.get("trained_on"):
+        return ui.day(str(meta["trained_on"]))
+    return ui.day(dt.date.fromtimestamp(p.stat().st_mtime)) if p is not None else "Not recorded"
+
+
+def short_name(name: str) -> str:
+    return name if len(name) < 28 else name.split("(")[0].strip()
+
+
+with st.container(key="two"):
+    left, right = st.columns([1.2, 1], gap="medium")
+    with left:
+        PICTURES[chosen]()
+        with st.container(key="pick_buttons"):
+            cols = st.columns(4)
+            for col, key, label in zip(cols, ("final", "comparison", "recall", "precision"),
+                                       ("Final ROC", "Comparison ROC", "Precision-recall", "Calibration")):
+                if col.button(label, key=f"btn_figures_{key}", type="primary" if key == chosen else "secondary",
+                              use_container_width=True, disabled=key == "comparison" and not has_comp):
+                    st.session_state["lab_pick"] = key
+                    st.rerun()
+
+    with right:
+        with st.container(key="lab_controls"):
+            U.html(ui.card_html("Threshold", "Loans at or above it are flagged; or click the ROC curve.", ""))
+            t = U.threshold_slider("Threshold (probability of default)", key="thr_lab")
+
+        ui.card("At this threshold", f"Threshold {t:.3f}, both models on the same loans.", ui.rows([
+            {"a": short_name(name), "a_small": f"Approves {pts[k]['approval']:.1%}",
+             "b": f"{pts[k]['tpr']:.1%} caught", "b_small": f"Precision {pts[k]['precision']:.1%}"} for k, name, _ in MODELS]),
+            kind="panel")
+
+        with st.container(key="sheet_rows"):
+            U.html(ui.card_html("Why LightGBM", "Open a row for the reasons and the method.", ""))
+            if ui.row_button({"a": "Technical reasons", "a_small": "Accuracy, calibration, speed"}, key="lab_tech"):
+                st.session_state["lab_sheet"] = "tech"
+            if ui.row_button({"a": "Business reasons", "a_small": "Net value and loss avoided"}, key="lab_biz"):
+                st.session_state["lab_sheet"] = "biz"
+            if ui.row_button({"a": "How it is worked out", "a_small": "Curves, threshold and data"}, key="lab_method"):
+                st.session_state["lab_sheet"] = "method"
+
+strip = [ui.strip_title("Models"), ui.strip_value(f"{short_name(final_name)} trained", trained("model"))]
+if has_comp:
+    strip.append(ui.strip_value(f"{comp_name or 'Comparison model'} saved", trained("comparison")))
+strip.append(f'<span class="l">Curves on the {source}</span>')
+ui.strip(strip)
+
+
+# ---------------------------------------------------------------------------
+# The sheet
+# ---------------------------------------------------------------------------
+
+@st.dialog("How it is measured")
+def sheet(which: str) -> None:
+    if which == "tech":
+        U.html(ui.eyebrow("Why LightGBM: technical reasons"))
+        lines = tech or ["Not available in the metadata."]
+    elif which == "biz":
+        U.html(ui.eyebrow("Why LightGBM: business reasons"))
+        lines = biz or ["Not available in the metadata."]
+    else:
+        U.html(ui.eyebrow("How it is worked out"))
+        lines = [f"Curves computed in the app on the {source}; the marker shows the threshold on each curve.",
+                 "Loans with a probability of default at or above the threshold are flagged; recall is the share of "
+                 "defaults flagged and precision the share of flagged loans that default.",
+                 "Calibration groups the loans into ten equal-sized PD bands and compares the mean predicted PD with the "
+                 "observed default rate.",
+                 "Comparison table, tuning and business results come from the model metadata."]
+        if tuned:
+            lines.insert(2, tuned)
+    for line in lines:
+        U.html(ui.note(line, "accent"))
+
+
+which = st.session_state.pop("lab_sheet", None)
+if which:
+    sheet(which)

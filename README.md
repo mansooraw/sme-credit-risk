@@ -149,7 +149,9 @@ Temporal validation (train on fiscal years up to 2005, test on 2006 onwards) giv
 
 ## App
 
-CreditLens is deployed as a multipage Streamlit app (CRISP-DM Deployment phase) that works on a desktop screen and on a phone. The entry point is `app/streamlit_app.py`. Shared loading, cleaning, scoring, expected-value, explanation and chart code is in `app/utils.py` and reuses `src/cleaning.py` and `src/features.py`, so a loan entered in the app goes through exactly the same steps as the training data. `app/analytics.py` holds the pure computations behind the interactive pages (similar loans, objective thresholds, Monte Carlo, stress test, the game and shareable case links) and is unit-tested on its own; `app/experience.py` holds the presentation layer (dark mode, the animated hero, the auto-play strip and the guided tour). The visual design is in `app/assets/theme.css` and `app/assets/theme_dark.css`, and every chart uses one Plotly template defined in `app/utils.py` that follows the dark-mode toggle.
+CreditLens is deployed as a multipage Streamlit app (CRISP-DM Deployment phase) that works on a laptop, a tablet and a phone. The entry point is `app/streamlit_app.py`. Shared loading, cleaning, scoring, expected-value, explanation and chart code is in `app/utils.py` and reuses `src/cleaning.py` and `src/features.py`, so a loan entered in the app goes through exactly the same steps as the training data. `app/analytics.py` holds the pure computations behind the interactive pages (similar loans, objective thresholds, Monte Carlo, stress test, the decision exercise and shareable case links) and is unit-tested on its own.
+
+The front end follows a written design system: `design-system/MASTER.md` sets the rules, `design-system/concepts/` holds the four concept images the pages were built from, `app/assets/tokens.css` holds every colour, size and duration, `app/assets/theme.css` styles the parts, and `app/ui.py` is the component kit (page bar with status pills, editorial title block, figure strip, glass cards, dark emerald panels, rows that open sheets, badges, facts grid, stepper). A page only composes kit parts; it never invents a colour or a size. `app/pages/kit.py` shows every part on one page.
 
 **Run locally** from the repository root, after installing `requirements.txt`:
 
@@ -159,32 +161,32 @@ streamlit run app/streamlit_app.py
 
 The app loads the final artefacts from `models/`. If they are not present it falls back to an interim development model in `app/_dev/` (git-ignored), which `python app/build_assets.py interim` creates, and shows a small notice. The same script rebuilds the committed files in `app/assets/`: cleaning parameters, sample files and templates (`raw`, `samples`) and the aggregate files that let the explorer pages run without `data/processed` (`aggregates`, documented in [docs/deployment_guide.md](docs/deployment_guide.md), section 6). No number in the app is typed in: each comes from the model metadata, a committed aggregate or a computation on the scored data.
 
-The sidebar groups the pages in four sections and keeps the threshold, the dark-mode choice and the drill-down filters while you move between pages. Charts with a "click to filter" hint are clickable, every filter also has a tap-friendly selector, and every tile has an "i" control that explains how its number is computed.
+Every page opens with a glass breadcrumb bar (model, held-out loans, approve-below pills), an editorial title and a strip of four figures. The sidebar keeps the threshold and the drill-down filters while you move between pages. Charts with a click hint are clickable, every filter also has a selector, and rows with a chevron open a sheet over the page.
 
 | Section | Page | What it shows |
 |---|---|---|
-| Decide | Home | Full-width hero with an animated flow of loans passing a scoring gate in the model's approve, refer and decline proportions, glass metric tiles that count up, a Watch it score strip cycling through three applicants, a guided tour of five pages, how it works, the decision rules and the cost matrix |
-| Decide | Score a loan | Validated form with example cases and shareable links (`?case=`); a short scoring sequence, PD gauge, band, decision, expected value, SHAP drivers, an applicant radar against the training portfolio, the ten most similar training loans and their outcomes, a what-if panel, and a decision memo plus a print-ready (PDF) memo |
-| Decide | Compare applicants | Two or three applicants in an editable table that rescores on every change, a PD bar chart, side-by-side gauges, the top drivers per applicant, a recommendation table, Copy one applicant into another and a shareable link (`?a=&b=&c=`) |
-| Decide | Beat the model | A game on five real held-out loans: approve or decline, the card turns over to show the model's PD and the real outcome, a running score and a final summary of accuracy and value under the cost matrix |
-| Decide | Batch scoring | CSV upload in two layouts, validation, cleaning and scoring; summary tiles, a clickable PD histogram that filters the table, band and decision donuts, a sortable and filterable table whose amount, guarantee, term and sector cells can be edited and rescored, the scored CSV and a portfolio memo |
-| Portfolio | Portfolio and threshold | Threshold slider and objective chips (maximum net value, best with 75% approved, stop 90% of defaults), animated net-value curve, confusion matrix, a clickable state map that filters the sector treemap |
-| Portfolio | Stress test | Recession on every loan, loss given default, margin and guarantee shift applied to the 20,000-loan test sample; animated KPI deltas, net value by threshold before and after, expected loss by sector and the break-even LGD of each sector |
-| Portfolio | Monte Carlo | 1,000 simulated portfolio years at the chosen threshold (each approved loan defaults with its PD): histogram with the 5th, 50th and 95th percentiles, the chance of a loss-making year and a fan chart across thresholds |
-| Explore | Market explorer | Animated map of default rates by state and approval year, sector bars, a sector, business age and outcome sunburst, a term by guarantee heatmap and a loan-volume timeline with the recession shaded; click a state or sector to filter everything, with an insight line under each chart |
-| Explore | Bank league | Searchable league table of 1,245 lenders, a clickable default rate against volume scatter and a profile card with an approvals sparkline |
-| Model | Model lab | ROC, precision-recall and calibration curves for the final and comparison models with a threshold marker (click the ROC curve to set it), the tuning slope chart and why LightGBM was chosen, computed from the metadata |
-| Model | Model insights | Metrics, calibration, ROC, business results, global SHAP importance, model comparison, tuning and temporal validation |
-| Model | Model card and about | Model card, team, course, data provenance, licence and how to add the app to a phone home screen |
+| Decide | Overview | The headline figures, the chart of defaults caught against repaid loans declined (or the approval, recall and net value curves), the decision policy panel with the share of applications at each step, three example applications that open a scored sheet, and the cost assumptions |
+| Decide | Score a loan | The application form with example cases and shareable links (`?case=`); the result panel with the probability, decision and band badges, expected net value, expected loss and gain if repaid; the SHAP drivers; a sheet with the what-if sliders, the applicant's percentiles and the ten most similar past loans; a decision memo and a print-ready memo |
+| Decide | Compare applicants | Two or three applicants as side-by-side profiles (probability, decision, expected value, loss and inputs), the best one highlighted; an editable table that rescores on every change; the driver chart per applicant; differences, recommendation, Copy and a shareable link |
+| Decide | Decision exercise | Five real held-out loans decided from the facts, then the model's probability and the recorded outcome; a running tally of officer and model value, and a round summary of accuracy and value under the cost matrix |
+| Decide | Batch scoring | CSV upload in two layouts, validation, cleaning and scoring; the figure strip, a clickable PD histogram that filters the table, decisions by sector, an editable table that rescores, the scored CSV and a portfolio memo |
+| Portfolio | Portfolio and threshold | Threshold slider and objective rows (maximum net value, best with 75% approved, stop 90% of defaults), the net value and approval curve, the confusion matrix panel, a clickable state map and the sector treemap |
+| Portfolio | Stress test | Recession on every loan, loss given default, margin and guarantee shift applied to the 20,000-loan test sample; figures against the base case, net value by threshold, expected loss by sector and the break-even LGD of each sector |
+| Portfolio | Monte Carlo | 1,000 simulated portfolio years at the chosen threshold: the distribution with its percentiles, the chance of a loss-making year and a fan chart across thresholds |
+| Explore | Market explorer | Animated map of default rates by state and approval year, default rate by year, by sector and by guarantee band; click a state or a bar to filter; top states panel |
+| Explore | Bank league | A league table of 1,245 lenders ranked by volume, best rate or largest book; click a bar to select a lender and see its profile |
+| Model | Model lab | ROC, precision-recall and calibration curves for the final and comparison models (click the ROC curve to set the threshold), both models at the threshold, and why LightGBM was chosen |
+| Model | Model insights | Metrics, global SHAP importance, dependence, errors by sector and over time, top drivers, weakest segments and the tuning table |
+| Model | Model card | The model card by section, the decision rule, data provenance and licence, the team and how to add the app to a phone home screen |
 
 Smoke tests for every page and the interactive logic run with `python -m pytest tests/test_app_smoke.py -q`.
 
 | Desktop | Phone |
 |---|---|
-| ![Home](docs/figures/app_home.png) | ![Home on a phone](docs/figures/app_mobile_home.png) |
+| ![Overview](docs/figures/app_home.png) | ![Overview on a phone](docs/figures/app_mobile_home.png) |
 | ![Score a loan](docs/figures/app_score_loan.png) | ![Score a loan on a phone](docs/figures/app_mobile_score_loan.png) |
 | ![Compare applicants](docs/figures/app_compare.png) | ![Compare applicants on a phone](docs/figures/app_mobile_compare.png) |
-| ![Beat the model](docs/figures/app_beat_model.png) | ![Beat the model on a phone](docs/figures/app_mobile_beat_model.png) |
+| ![Decision exercise](docs/figures/app_beat_model.png) | ![Decision exercise on a phone](docs/figures/app_mobile_beat_model.png) |
 | ![Batch scoring](docs/figures/app_batch_scoring.png) | ![Batch scoring on a phone](docs/figures/app_mobile_batch_scoring.png) |
 | ![Portfolio and threshold](docs/figures/app_portfolio_threshold.png) | ![Portfolio and threshold on a phone](docs/figures/app_mobile_portfolio_threshold.png) |
 | ![Stress test](docs/figures/app_stress_test.png) | ![Stress test on a phone](docs/figures/app_mobile_stress_test.png) |

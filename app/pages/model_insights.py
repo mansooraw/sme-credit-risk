@@ -1,6 +1,9 @@
-"""Model insights: performance, drivers, tuning and behaviour over time."""
+"""Model insights: the figure strip of test metrics, the picture on the left (global importance, a dependence
+plot, errors by sector, temporal validation) with its pill row, and on the right the dependence input, the top
+drivers in the dark panel and the rows that open the weakest segments, the tuning table and the method."""
 
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -9,170 +12,286 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
-from sklearn.calibration import calibration_curve  # noqa: E402
-from sklearn.metrics import roc_auc_score, roc_curve  # noqa: E402
 
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
-from src import config  # noqa: E402
 
-X.page_start("insights")
-U.page_header("Model insights", "What the model relies on, how it compares with the alternatives, how well its "
-              "probabilities match observed default rates and how it holds up over time.", eyebrow="Evaluation")
+ui.page("Model insights", "What the model relies on, how each input moves the score and where it errs.", eyebrow="Model",
+        heading="What the model relies on.")
 meta = U.load_metadata()
+HEIGHT = 400
+SHAP_ROWS = 1500
+ROWS = 3          # rows per right-hand list that fit at 1138 x 690
+SEGMENT_MIN = 200  # sectors with fewer held-out loans are left out of the error analysis
+DEP_FEATURES = ["TermYears", "Portion", "LogDisbursement", "NoEmp", "LoanPerEmployee", "DisbursedToApprovedRatio",
+                "RetainedJob", "CreateJob", "JobsPerDollar"]
+
+metrics = meta.get("metrics_test") or {}
+tv = meta.get("temporal_validation") if isinstance(meta.get("temporal_validation"), dict) else {}
+t = U.threshold()
 
 
-def find_figure(*words: str) -> Path | None:
-    if not config.FIGURES_DIR.exists():
-        return None
-    for path in sorted(config.FIGURES_DIR.glob("*.png")):
-        stem = path.stem.lower()
-        if not stem.startswith("app_") and all(w in stem for w in words):
-            return path
-    return None
+def value(v, pct=False):
+    return "n/a" if v is None else (ui.pct(float(v)) if pct else f"{float(v):.3f}")
 
 
-tab_perf, tab_drivers, tab_tuning, tab_time = st.tabs(["Performance", "Drivers", "Tuning", "Over time"])
+@st.cache_data(show_spinner="Computing SHAP values on a sample of held-out loans")
+def shap_sample(model_key: str, n: int = SHAP_ROWS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """SHAP values (log-odds, summed to input features) for a fixed sample of the committed test sample."""
+    df = pd.read_csv(U.TEST_SAMPLE_PATH)
+    df = U._clean_text(df.sample(min(n, len(df)), random_state=7).reset_index(drop=True))
+    model = U.load_model()
+    pre, _ = U.split_pipeline(model)
+    X_ = df[U.deployment_features()]
+    Xt = pre.transform(X_) if pre is not None else X_.to_numpy()
+    Xt = Xt.toarray() if hasattr(Xt, "toarray") else np.asarray(Xt)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        values = U.warm_explainer().shap_values(Xt)
+    if isinstance(values, list):
+        values = values[-1]
+    values = np.asarray(values)
+    if values.ndim == 3:
+        values = values[:, :, -1]
+    out_names = U.output_feature_names(model)[: values.shape[1]]
+    sv = pd.DataFrame(values[:, : len(out_names)], columns=out_names)
+    sv = sv.T.groupby([U.source_feature(c) for c in sv.columns]).sum().T
+    return df, sv
 
-with tab_perf:
-    metrics = meta.get("metrics_test") or {}
-    names = {"roc_auc": "ROC-AUC", "pr_auc": "PR-AUC", "recall": "Recall", "precision": "Precision", "f1": "F1",
-             "brier": "Brier score", "accuracy": "Accuracy", "balanced_accuracy": "Balanced accuracy"}
-    accents = [U.COLOURS["navy"], U.COLOURS["teal"], U.COLOURS["teal"], U.COLOURS["amber"]]
-    helps = {"roc_auc": "Area under the ROC curve on the test split.", "pr_auc": "Area under the precision-recall curve on the test split.",
-             "recall": "Defaults with PD at or above the threshold, divided by all defaults.",
-             "precision": "Defaults among the loans flagged at or above the threshold.",
-             "f1": "Harmonic mean of precision and recall at the threshold.",
-             "brier": "Mean squared gap between the predicted PD and the outcome (0 or 1); lower is better.",
-             "accuracy": "Share of test loans classified correctly at the threshold.",
-             "balanced_accuracy": "Average of recall on defaults and recall on repaid loans."}
-    items = [{"label": names[k], "value": U.fmt_metric(metrics[k]), "accent": accents[i % 4],
-              "help": helps[k] + " From the model metadata."}
-             for i, k in enumerate(k for k in names if k in metrics)]
-    if items:
-        U.tiles(items, cols=4, min_width=200)
-        cv = meta.get("metrics_cv") or {}
-        cv_mean, cv_std = U.find_value(cv, ["roc_auc_mean", "mean", "roc_auc"]), U.find_value(cv, ["roc_auc_std", "std"])
-        cap = "Test-set metrics at the business threshold, from the model metadata."
-        if cv_mean is not None:
-            cap += f" Cross-validated ROC-AUC on the training data: {U.fmt_metric(cv_mean)}"
-            cap += f" (standard deviation {U.fmt_metric(cv_std)})." if cv_std is not None else "."
-        st.caption(cap)
 
-    portfolio, source = U.scored_portfolio(U.model_version_key())
-    pp, yy = portfolio["p"].to_numpy(), portfolio["Default"].to_numpy().astype(int)
-    c1, c2 = st.columns(2, gap="large")
-    with c1:
-        frac_pos, mean_pred = calibration_curve(yy, pp, n_bins=10, strategy="quantile")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode="lines", name="Perfect calibration",
-                                 line=dict(color=U.COLOURS["grey"], dash="dot", width=1.5)))
-        fig.add_trace(go.Scatter(x=mean_pred * 100, y=frac_pos * 100, mode="lines+markers", name="Model",
-                                 line=dict(color=U.COLOURS["navy"], width=3),
-                                 marker=dict(size=9, color=U.COLOURS["teal"], line=dict(color="#FFFFFF", width=2)),
-                                 hovertemplate="Predicted %{x:.1f}%<br>Observed %{y:.1f}%<extra></extra>"))
-        fig.update_layout(title="Calibration by decile of PD", xaxis=dict(title="Mean predicted PD (%)", range=[0, 100]),
-                          yaxis=dict(title="Observed default rate (%)", range=[0, 100]))
-        U.chart(fig, height=380, key="calibration")
-    with c2:
-        fpr, tpr, _ = roc_curve(yy, pp)
-        idx = np.unique(np.linspace(0, len(fpr) - 1, 400).astype(int))
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random ranking",
-                                 line=dict(color=U.COLOURS["grey"], dash="dot", width=1.5)))
-        fig.add_trace(go.Scatter(x=fpr[idx], y=tpr[idx], mode="lines", name=f"Model, AUC {roc_auc_score(yy, pp):.3f}",
-                                 line=dict(color=U.COLOURS["teal"], width=3.5), fill="tozeroy",
-                                 fillcolor=U.hex_rgba(U.COLOURS["teal"], 0.08)))
-        fig.update_layout(title="ROC curve", xaxis_title="False positive rate", yaxis_title="True positive rate")
-        U.chart(fig, height=380, key="roc")
-    st.caption(f"Computed in the app from the {source}.")
-    figs = [f for f in (find_figure("fig05", "calibration"), find_figure("roc")) if f is not None]
-    if figs:
-        with st.expander("Evaluation figures from the notebooks"):
-            for f in figs:
-                st.image(str(f), caption=f.name, use_container_width=True)
+@st.cache_data(show_spinner=False)
+def errors(model_key: str, threshold: float) -> tuple[pd.DataFrame, str, float]:
+    portfolio, source = U.scored_portfolio(model_key)
+    pf = portfolio.assign(flag=portfolio["p"] >= threshold, y=portfolio["Default"].astype(int))
+    pf["missed"] = (~pf["flag"]) & (pf["y"] == 1)
+    pf["declined_good"] = pf["flag"] & (pf["y"] == 0)
+    err = pf.groupby("Sector").agg(loans=("y", "size"), default_rate=("y", "mean"), mean_pd=("p", "mean"),
+                                   missed=("missed", "sum"), defaults=("y", "sum"),
+                                   declined_good=("declined_good", "sum")).reset_index()
+    err["missed_share"] = err["missed"] / err["defaults"].clip(lower=1)
+    err["declined_share"] = err["declined_good"] / (err["loans"] - err["defaults"]).clip(lower=1)
+    overall_missed = float(pf["missed"].sum() / max(int(pf["y"].sum()), 1))
+    return err[err["loans"] >= SEGMENT_MIN].sort_values("missed_share", ascending=False), source, overall_missed
 
-    br = meta.get("business_results")
-    if isinstance(br, dict) and br:
-        U.section_title("Business results on the held-out portfolio", "coins")
-        policies = {k: v for k, v in br.items() if isinstance(v, dict)}
-        if policies:
-            frame = pd.DataFrame(policies).T
-            frame = frame.apply(lambda col: col.map(lambda v: U.format_business_value(col.name, v)))
-            frame.index = [U.prettify_key(i) for i in frame.index]
-            frame.columns = [U.prettify_key(c) for c in frame.columns]
-            st.dataframe(frame, use_container_width=True)
-        scalars = [(k, v) for k, v in br.items() if not isinstance(v, (dict, list))]
-        if scalars:
-            st.dataframe(pd.DataFrame([(U.prettify_key(k), U.format_business_value(k, v)) for k, v in scalars],
-                                      columns=["Measure", "Value"]), hide_index=True, use_container_width=True,
-                         height=35 * (len(scalars) + 1) + 3)
-            st.caption("From the model metadata. Rates are shares of the held-out loans; values in USD use the cost assumptions.")
 
-with tab_drivers:
-    g = U.global_importance(15)
-    if g is not None:
-        g = g.iloc[::-1]
-        fig = go.Figure()
-        for _, r in g.iterrows():
-            fig.add_shape(type="line", x0=0, x1=r["importance"], y0=r["label"], y1=r["label"],
-                          line=dict(color=U.hex_rgba(U.COLOURS["navy"], 0.35), width=3))
-        fig.add_trace(go.Scatter(x=g["importance"], y=g["label"], mode="markers+text",
-                                 marker=dict(size=14, color=U.COLOURS["teal"], line=dict(color="#FFFFFF", width=2.5)),
-                                 text=[f"{v:.2f}" for v in g["importance"]], textposition="middle right",
-                                 textfont=dict(family=U.MONO_STACK, size=11, color=U.MUTED),
-                                 hovertemplate="%{y}<br>Mean |SHAP| %{x:.3f}<extra></extra>"))
-        fig.update_layout(title="Global importance: mean absolute SHAP value", showlegend=False,
-                          xaxis=dict(title="Mean absolute SHAP value (log-odds), one-hot levels summed per input",
-                                     range=[0, float(g["importance"].max()) * 1.18]),
-                          yaxis=dict(showgrid=False), margin=dict(l=8, r=8, t=44, b=44))
-        U.chart(fig, height=36 * len(g) + 110, key="importance")
-        st.caption("A longer stem means the input moves the score more on average, in either direction. "
-                   "Source: shap_global.csv stored with the model.")
-    else:
-        st.info("Global importance is not available for the loaded model.")
+def short_sector(s: str) -> str:
+    s = str(s)
+    if len(s) >= 28:
+        s = s.split(",")[0]
+    if len(s) >= 28:
+        s = s.split(" and ")[0]
+    return s
 
-with tab_tuning:
-    table = U.records_table(meta.get("comparison_table"))
-    U.section_title("Model comparison", "grid")
-    if table is not None:
-        st.dataframe(U.pretty_table(table), hide_index=True, use_container_width=True)
-        st.caption("All models were trained and tested on the same split; source: model metadata.")
-        label_col = table.columns[0]
-        auc_col = next((c for c in ("test_roc_auc", "roc_auc") if c in table.columns), None)
-        if auc_col and pd.api.types.is_numeric_dtype(table[auc_col]):
-            srt = table.sort_values(auc_col)
-            fig = go.Figure(go.Bar(x=srt[auc_col], y=srt[label_col].astype(str), orientation="h",
-                                   marker=dict(color=[U.COLOURS["teal"] if i == len(srt) - 1 else U.hex_rgba(U.COLOURS["navy"], 0.55)
-                                                      for i in range(len(srt))]),
-                                   text=[f"{v:.3f}" for v in srt[auc_col]], textposition="outside",
-                                   textfont=dict(family=U.MONO_STACK, size=11)))
-            fig.update_layout(title="Test ROC-AUC by model", barcornerradius=6, xaxis=dict(range=[0, 1.08], title="ROC-AUC"))
-            U.chart(fig, height=60 * len(srt) + 100, key="comparison")
-    else:
-        st.info("No comparison table in the metadata.")
-    U.section_title("Tuning: before and after", "sliders")
+
+key = U.model_version_key()
+importance = U.global_importance(12)
+err, source, overall_missed = errors(key, t)
+
+# ---------------------------------------------------------------------------
+# The middle pictures
+# ---------------------------------------------------------------------------
+
+
+def picture_importance():
+    if importance is None:
+        U.html(ui.empty("Global importance is not available for the loaded model: run notebook 05 to write shap_global.csv."))
+        return
+    g = importance.iloc[::-1]
+    fig = go.Figure(go.Bar(x=g["importance"], y=[U.short_label(s) for s in g["source"]], orientation="h",
+                           marker_color=ui.CHART["accent"], text=[f"{v:.2f}" for v in g["importance"]], textposition="outside",
+                           cliponaxis=False, textfont=dict(size=12, color=ui.CHART["muted"]), customdata=g["label"],
+                           hovertemplate="%{customdata}<br>Mean |SHAP| %{x:.3f}<extra></extra>"))
+    ui.chart_layout(fig, "What the model relies on most")
+    fig.update_layout(showlegend=False, bargap=0.3, yaxis=dict(showgrid=False),
+                      xaxis=dict(title="Mean absolute SHAP value (log-odds)", range=[0, float(g["importance"].max()) * 1.15]))
+    ui.picture(fig, height=HEIGHT)
+
+
+def picture_dependence(feat):
+    sample, sv = shap_sample(key)
+    x = sample[feat].to_numpy(dtype=float)
+    log_x = feat == "LogDisbursement"
+    if log_x:
+        x = np.expm1(x)
+    yv = sample["Default"].to_numpy().astype(int)
+    fig = go.Figure()
+    fig.add_hline(y=0, line_color=ui.CHART["hairline"], line_width=1)
+    for outcome, colour, label in [(0, ui.CHART["accent"], "Repaid"), (1, ui.CHART["bad"], "Defaulted")]:
+        m = yv == outcome
+        fig.add_trace(go.Scattergl(x=x[m], y=sv.loc[m, feat], mode="markers", name=label,
+                                   marker=dict(size=5, color=colour, opacity=0.45),
+                                   hovertemplate=f"{U.short_label(feat)} %{{x:,.2f}}<br>SHAP %{{y:.2f}}<extra>{label}</extra>"))
+    ui.chart_layout(fig, f"How {U.short_label(feat).lower()} moves the score")
+    fig.update_layout(xaxis=dict(title=U.short_label(feat) + (" (USD, log scale)" if log_x else ""), type="log" if log_x else None),
+                      yaxis=dict(title="SHAP value (log-odds); above 0 raises the PD"))
+    ui.picture(fig, height=HEIGHT)
+
+
+def picture_errors():
+    e = err.sort_values("loans", ascending=False).head(12).sort_values("missed_share")
+    labels = [short_sector(s) for s in e["Sector"]]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=e["missed_share"], y=labels, orientation="h", name="Defaults approved", marker_color=ui.CHART["bad"],
+                         customdata=e[["loans", "default_rate"]].to_numpy(),
+                         hovertemplate="%{y}<br>Defaults approved %{x:.1%}<br>%{customdata[0]:,.0f} loans, default rate "
+                                       "%{customdata[1]:.1%}<extra></extra>"))
+    fig.add_trace(go.Bar(x=e["declined_share"], y=labels, orientation="h", name="Repaid loans not approved",
+                         marker_color=ui.CHART["accent_light"],
+                         hovertemplate="%{y}<br>Repaid loans not approved %{x:.1%}<extra></extra>"))
+    ui.chart_layout(fig, f"Errors by sector at threshold {t:.0%}")
+    fig.update_layout(barmode="group", bargap=0.25, yaxis=dict(showgrid=False),
+                      xaxis=dict(title="Share of the sector's defaults or repaid loans", tickformat=".0%"))
+    ui.picture(fig, height=HEIGHT)
+
+
+def picture_temporal():
+    keys = [("roc_auc", "ROC-AUC"), ("pr_auc", "PR-AUC"), ("recall", "Recall"), ("precision", "Precision")]
+    keys = [(k, label) for k, label in keys if k in tv]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=[label for _, label in keys], y=[metrics.get(k) for k, _ in keys], name="Random split",
+                         marker_color=ui.CHART["accent_light"], text=[value(metrics.get(k)) for k, _ in keys],
+                         textposition="outside", textfont=dict(size=12, color=ui.CHART["muted"]),
+                         hovertemplate="%{x}<br>Random split %{y:.3f}<extra></extra>"))
+    fig.add_trace(go.Bar(x=[label for _, label in keys], y=[tv.get(k) for k, _ in keys],
+                         name=f"Temporal split (tested on {str(tv.get('test', 'later years')).replace('ApprovalFY', 'approvals')})",
+                         marker_color=ui.CHART["accent"], text=[value(tv.get(k)) for k, _ in keys],
+                         textposition="outside", textfont=dict(size=12, color=ui.CHART["muted"]),
+                         hovertemplate="%{x}<br>Temporal split %{y:.3f}<extra></extra>"))
+    ui.chart_layout(fig, "Trained on older loans, tested on later ones")
+    fig.update_layout(barmode="group", bargap=0.3, xaxis=dict(showgrid=False), yaxis=dict(title="Score on the test loans", range=[0, 1.1]),
+                      legend=dict(y=1.0, yanchor="bottom"))
+    ui.picture(fig, height=HEIGHT)
+
+
+# ---------------------------------------------------------------------------
+# The page: figure strip, picture left, input and top drivers right, data strip
+# ---------------------------------------------------------------------------
+
+drop = tv.get("roc_auc_drop_vs_random_split")
+ui.kpis([
+    ("ROC-AUC", value(metrics.get("roc_auc")), "Test split"),
+    ("PR-AUC", value(metrics.get("pr_auc")), "Test split"),
+    ("Recall", value(metrics.get("recall"), pct=True), f"At threshold {t:.0%}"),
+    ("Temporal AUC", value(tv.get("roc_auc")), "Not recorded" if drop is None else f"Drop {float(drop):.3f}"),
+])
+chosen = st.session_state.get("insights_pick", "roc")
+if chosen not in ("roc", "pr", "recall", "temporal"):
+    chosen = "roc"
+feat = st.session_state.get("ins_dep_feature", DEP_FEATURES[0])
+
+with st.container(key="two"):
+    left, right = st.columns([1.2, 1], gap="medium")
+    with left:
+        if chosen == "roc":
+            picture_importance()
+        elif chosen == "pr":
+            try:
+                sample, sv = shap_sample(key)
+                ok = feat in sample.columns and feat in sv.columns
+            except Exception:  # noqa: BLE001
+                ok = False
+            if ok:
+                picture_dependence(feat)
+            else:
+                U.html(ui.empty("SHAP dependence is not available for the loaded model: run notebook 05 to write the model files."))
+        elif chosen == "recall":
+            picture_errors()
+        elif tv:
+            picture_temporal()
+        else:
+            U.html(ui.empty("No temporal validation results in the metadata: run notebook 05 to add them."))
+        with st.container(key="pick_buttons"):
+            cols = st.columns(4)
+            for col, k, label in zip(cols, ("roc", "pr", "recall", "temporal"),
+                                     ("Importance", "Dependence", "Errors by sector", "Over time")):
+                if col.button(label, key=f"btn_figures_{k}", type="primary" if k == chosen else "secondary",
+                              use_container_width=True):
+                    st.session_state["insights_pick"] = k
+                    st.rerun()
+
+    with right:
+        with st.container(key="insights_controls"):
+            U.html(ui.card_html("Input", "The input the dependence picture plots.", ""))
+            if st.session_state.get("ins_dep_feature") not in DEP_FEATURES:
+                st.session_state["ins_dep_feature"] = DEP_FEATURES[0]
+
+            def show_dependence():
+                st.session_state["insights_pick"] = "pr"
+
+            st.selectbox("Input", DEP_FEATURES, key="ins_dep_feature", format_func=U.short_label, on_change=show_dependence)
+
+        if importance is not None:
+            ui.card("Top drivers", "Mean absolute SHAP value, log-odds.", ui.rows([
+                {"a": U.short_label(r["source"]), "b": f"{r['importance']:.2f}"} for _, r in importance.head(ROWS).iterrows()]),
+                kind="panel")
+        else:
+            ui.card("Top drivers", None, ui.empty("Global importance is not available: run notebook 05 to write shap_global.csv."),
+                    kind="panel")
+
+        tuning = U.records_table(meta.get("before_after_tuning"))
+        has_tuning = tuning is not None and {"model", "test_roc_auc"} <= set(tuning.columns)
+        with st.container(key="sheet_rows"):
+            U.html(ui.card_html("Where it errs", "Open a row for the segments, the tuning or the method.", ""))
+            worst = err.head(1)
+            if len(worst):
+                w = worst.iloc[0]
+                if ui.row_button({"a": "Weakest segments", "a_small": short_sector(w["Sector"]),
+                                  "badge": "High" if w["missed_share"] > overall_missed * 1.5 else "Medium",
+                                  "b_small": ui.pct(w["missed_share"])}, key="ins_segments"):
+                    st.session_state["insights_sheet"] = "segments"
+            if has_tuning and ui.row_button({"a": "See all", "a_small": f"Tuning, {len(tuning)} model versions"}, key="ins_tuning"):
+                st.session_state["insights_sheet"] = "tuning"
+            if ui.row_button({"a": "How it is worked out", "a_small": "SHAP, errors and temporal split"}, key="ins_how"):
+                st.session_state["insights_sheet"] = "how"
+
+strip = [ui.strip_title("Tuning")]
+if has_tuning:
+    g = tuning[tuning["model"].astype(str).str.lower().str.contains("lightgbm")]
+    if len(g) >= 2:
+        strip += [ui.strip_value("ROC-AUC before", f"{g['test_roc_auc'].iloc[0]:.3f}"),
+                  ui.strip_value("after tuning", f"{g['test_roc_auc'].iloc[-1]:.3f}")]
+strip.append(f'<span class="l">Errors on the {source}</span>')
+ui.strip(strip)
+
+
+# ---------------------------------------------------------------------------
+# The sheets: weakest segments, the full tuning table, the method
+# ---------------------------------------------------------------------------
+
+@st.dialog("Weakest segments", width="large")
+def sheet_segments() -> None:
+    U.html(ui.note(f"Share of each sector's defaults the model approves at threshold {t:.0%}; all sectors "
+                   f"{overall_missed:.1%}. Sectors with at least {SEGMENT_MIN} held-out loans.", "accent"))
+    U.html(ui.rows([
+        {"a": short_sector(r["Sector"]), "a_small": f"{int(r['loans']):,} loans, default rate {r['default_rate']:.1%}",
+         "badge": "High" if r["missed_share"] > overall_missed * 1.5 else ("Medium" if r["missed_share"] > overall_missed else "Low"),
+         "b_small": ui.pct(r["missed_share"])} for _, r in err.head(8).iterrows()]))
+
+
+@st.dialog("Tuning", width="large")
+def sheet_tuning() -> None:
     table = U.records_table(meta.get("before_after_tuning"))
-    if table is not None:
-        st.dataframe(U.pretty_table(table), hide_index=True, use_container_width=True)
-        st.caption("Default parameters against the tuned parameters on the same test set; source: model metadata.")
-    else:
-        st.info("No tuning table in the metadata.")
+    U.html(ui.note("Each model before and after tuning, scored on the held-out test split. From the model metadata.", "accent"))
+    st.dataframe(table, hide_index=True, use_container_width=True, key="ins_tuning_table")
 
-with tab_time:
-    tv = meta.get("temporal_validation")
-    if isinstance(tv, dict) and tv:
-        rows = U.flatten(tv)
-        num = [(k, v) for k, v in rows if isinstance(v, (int, float)) and not isinstance(v, bool)]
-        preferred = ["roc_auc", "recall", "pr_auc", "precision", "test_default_rate", "mean_predicted_pd"]
-        num = sorted(num, key=lambda kv: preferred.index(kv[0]) if kv[0] in preferred else len(preferred))
-        if num:
-            U.tiles([{"label": U.prettify_key(k), "value": U.fmt_metric(v) if abs(v) <= 1.5 else f"{v:,.0f}",
-                      "accent": U.COLOURS["navy"]} for k, v in num[:4]], cols=min(4, len(num[:4])))
-        st.dataframe(pd.DataFrame([(U.prettify_key(k), str(v)) for k, v in rows], columns=["Item", "Value"]),
-                     hide_index=True, use_container_width=True)
-        st.caption("The model is retrained on older approvals and tested on later ones to show how performance "
-                   "changes over time. Recent years are affected by right-censoring: loans approved shortly before "
-                   "the data ends have had little time to default.")
-    else:
-        st.info("No temporal validation results in the metadata.")
+
+@st.dialog("How it is worked out")
+def sheet_how() -> None:
+    for line in [
+        "ROC-AUC, PR-AUC and recall are read from the model metadata (held-out test split).",
+        "Importance is the mean absolute SHAP value of each input (shap_global.csv); one-hot levels are summed.",
+        f"Dependence plots TreeExplainer SHAP values for {SHAP_ROWS:,} loans of the committed test sample.",
+        f"Errors by sector are worked out in the app on the {source} at the business threshold.",
+        f"The temporal split retrains on {tv.get('train', 'older approvals')} and tests on {tv.get('test', 'later approvals')}; "
+        "recent years are right-censored, as loans approved shortly before the data ends had little time to default.",
+    ]:
+        U.html(ui.note(line, "accent"))
+
+
+which = st.session_state.pop("insights_sheet", None)
+if which == "segments":
+    sheet_segments()
+elif which == "tuning":
+    sheet_tuning()
+elif which == "how":
+    sheet_how()

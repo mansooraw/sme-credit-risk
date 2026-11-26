@@ -1,4 +1,6 @@
-"""Score a loan: application form, PD gauge, decision, value, explanation, what-if panel and memo."""
+"""Score a loan, built from the client's concept: the application form on the left (example buttons, the
+guarantee mode, the form in three groups), the dark result panel on the right (PD, decision, value), then the
+drivers of the score and the actions. The what-if, the comparison and the similar past loans open in one sheet."""
 
 import sys
 import time
@@ -12,7 +14,7 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import analytics as A  # noqa: E402
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 
 # Model and SHAP explainer are loaded once per session, before the first score
@@ -21,13 +23,7 @@ try:
     U.warm_explainer()
 except Exception:  # noqa: BLE001
     pass
-X.page_start("score")
-U.page_header(
-    "Score a loan",
-    "Enter the application as the credit desk receives it. Inputs are checked against the training ranges, "
-    "scored, priced with the cost matrix and explained.",
-    eyebrow="Single application",
-)
+ui.page("Score a loan", "Every application, examined clearly.", eyebrow="Decide", heading="Score a loan")
 
 fields = U.schema_fields()
 raw_f, feat_f = fields["raw"], fields["features"]
@@ -45,7 +41,7 @@ def help_text(name: str) -> str:
 
 
 score_rows = U.score_form_rows
-
+WORDS = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}
 
 EXAMPLES = dict(U.EXAMPLES)
 EXAMPLE_LABELS = U.EXAMPLE_LABELS
@@ -87,95 +83,41 @@ for _k, _ex in list(EXAMPLES.items()):
             EXAMPLES.pop(_k, None)
 yes_no = U.YES_NO
 
-
-def form_head(text: str, icon_name: str) -> None:
-    U.html(f'<div class="cl-form-head"><span class="ic">{U.icon(icon_name, 17)}</span>{text}</div>')
-
-
-left, right = st.columns([1.08, 1], gap="large")
-
-with left:
-    with st.container(key="examples"):
-        U.html('<div class="cl-tile-label" style="margin-bottom:6px">Load an example case</div>')
-        ec = st.columns([1.15, 1, 1, 0.8])
-        for col, key in zip(ec, ["borderline", "low", "high"]):
-            if col.button(EXAMPLE_LABELS[key], key=f"btn_{key}"):
-                st.session_state["example"] = key
-                st.session_state["auto_score"] = True
-    if st.session_state.get("example") not in EXAMPLES:
-        st.session_state["example"] = "borderline"
-    example = EXAMPLES[st.session_state["example"]]
-    form_key = st.session_state.get("example", "borderline")
-
-    guarantee_mode = st.radio("Guarantee entered as", ["Guaranteed amount (USD)", "Guaranteed share"],
-                              horizontal=True, key=f"mode_{form_key}",
-                              help="Give either the guaranteed amount or the share of the approved amount it covers.")
-
-    with st.form(f"loan_form_{form_key}", border=False):
-        form_head("Loan", "coins")
-        c1, c2 = st.columns(2)
-        gr = c1.number_input("Loan amount approved (USD)", min_value=rng("GrAppv", "min", 1000.0),
-                             max_value=rng("GrAppv", "max", 5e6), value=example["GrAppv"], step=5_000.0, format="%.0f",
-                             help=help_text("GrAppv"))
-        if guarantee_mode == "Guaranteed amount (USD)":
-            sba = c2.number_input("Guaranteed amount (USD)", min_value=0.0, max_value=rng("SBA_Appv", "max", 5e6),
-                                  value=example["SBA_Appv"], step=5_000.0, format="%.0f", help=help_text("SBA_Appv"))
-            share = None
-        else:
-            share = c2.number_input("Guaranteed share", min_value=0.0, max_value=1.0, value=example["Portion"],
-                                    step=0.05, format="%.2f", help=help_text("Portion"))
-            sba = None
-        c1, c2 = st.columns(2)
-        disb = c1.number_input("Amount disbursed (USD)", min_value=rng("DisbursementGross", "min", 4000.0),
-                               max_value=rng("DisbursementGross", "max", 1.2e7), value=example["DisbursementGross"],
-                               step=5_000.0, format="%.0f", help=help_text("DisbursementGross"))
-        term = c2.number_input("Term (months)", min_value=1, max_value=480, value=int(example["Term"]), step=6,
-                               help="Scheduled term of the loan in months, 1 to 480.")
-        c1, c2 = st.columns(2)
-        revline = c1.selectbox("Revolving line of credit", ["N", "Y"], index=["N", "Y"].index(example["RevLineCr"]),
-                               format_func=yes_no.get, help="Whether the loan is a revolving line of credit.")
-        lowdoc = c2.selectbox("LowDoc programme", ["N", "Y"], index=["N", "Y"].index(example["LowDoc"]),
-                              format_func=yes_no.get, help=(feat_f.get("LowDoc") or {}).get("help", ""))
-
-        form_head("Business", "briefcase")
-        c1, c2, c3 = st.columns(3)
-        noemp = c1.number_input("Employees", min_value=0, max_value=int(rng("NoEmp", "max", 300)),
-                                value=int(example["NoEmp"]), help=help_text("NoEmp"))
-        create = c2.number_input("Jobs created", min_value=0, max_value=int(rng("CreateJob", "max", 200)),
-                                 value=int(example["CreateJob"]), help=help_text("CreateJob"))
-        retain = c3.number_input("Jobs retained", min_value=0, max_value=int(rng("RetainedJob", "max", 280)),
-                                 value=int(example["RetainedJob"]), help=help_text("RetainedJob"))
-        c1, c2, c3 = st.columns(3)
-        new_exist = c1.selectbox("Business age", ["Existing", "New"], index=["Existing", "New"].index(example["NewExist"]),
-                                 format_func=lambda v: {"Existing": "Existing (over 2 years)", "New": "New (2 years or less)"}[v])
-        franchise = c2.selectbox("Franchise", ["N", "Y"], index=["N", "Y"].index(example["IsFranchise"]),
-                                 format_func=yes_no.get, help=(feat_f.get("IsFranchise") or {}).get("help", ""))
-        urban = c3.selectbox("Location", ["Urban", "Rural"], index=["Urban", "Rural"].index(example["UrbanRural"]),
-                             help="Urban or rural location of the business.")
-        c1, c2 = st.columns([2, 1])
-        sector = c1.selectbox("Industry sector", sectors, index=sectors.index(example["Sector"]),
-                              help=(feat_f.get("Sector") or {}).get("help", ""))
-        state = c2.selectbox("Borrower state", states, index=states.index(example["State"]),
-                             help=(feat_f.get("State") or {}).get("help", ""))
-
-        form_head("Lender and scenario", "bank")
-        c1, c2 = st.columns([2, 1])
-        bank = c1.selectbox("Lending bank", bank_options, index=bank_options.index(example["Bank"]),
-                            help="Type to search the banks in the training data. A bank not listed is scored with the "
-                                 "overall historical default rate.")
-        bank_state = c2.selectbox("Bank state", bank_states, index=bank_states.index(example["BankState"]),
-                                  help=(feat_f.get("BankState") or {}).get("help", ""))
-        recession = st.toggle("Recession stress: score as if the loan ran through 2007 to 2009",
-                              value=bool(example["Recession"]),
-                              help="Sets the recession indicator used by the model.")
-        submitted = st.form_submit_button("Score this loan", type="primary", use_container_width=True)
-
-if st.session_state.pop("auto_score", False):
-    submitted = True
+t, d = U.threshold(), U.decline_threshold()
+result = st.session_state.get("score_result")
 
 
-def validate() -> tuple[list[str], list[str], float]:
+def pressed(key: str) -> bool:
+    """Whether a button was pressed for this run, read before it is drawn so it is drawn in its new state."""
+    try:
+        return bool(st.session_state.get(key))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# An example button is read first, so the chosen one is drawn as the primary pill in this run
+for _k in ["borderline", "low", "high"]:
+    if pressed(f"btn_{_k}"):
+        st.session_state["example"] = _k
+        st.session_state["auto_score"] = True
+if pressed("btn_row_edit"):  # Edit application: the form is always open on the left; this only marks the intent
+    st.session_state["score_edit"] = True
+
+
+def form_values(key: str) -> dict:
+    """The values the form opens with: the example, or the last scored application of that example."""
+    ex = dict(EXAMPLES[key])
+    row = (result or {}).get("row")
+    if row and (result or {}).get("example") == key:
+        ex.update(row)
+        ex["Portion"] = float(row["SBA_Appv"]) / float(row["GrAppv"]) if row["GrAppv"] else ex.get("Portion", 0.75)
+        ex["Recession"] = bool(row["Recession"])
+    return ex
+
+
+def validate(v: dict) -> tuple[list[str], list[str], float]:
     errors, warnings = [], []
+    gr, sba, share, disb, term = v["gr"], v["sba"], v["share"], v["disb"], v["term"]
     sba_value = sba if sba is not None else (share or 0) * gr
     if share is not None and not 0 < share <= 1:
         errors.append("The guaranteed share must be above 0 and at most 1.")
@@ -188,310 +130,453 @@ def validate() -> tuple[list[str], list[str], float]:
     portion = sba_value / gr if gr else 0
     lo, hi = rng("Portion", "min", 0.05), rng("Portion", "max", 1.0)
     if not errors and not lo <= portion <= hi:
-        warnings.append(f"A guaranteed share of {portion:.0%} is outside the range seen in training ({lo:.0%} to {hi:.0%}).")
+        warnings.append(f"Guaranteed share {portion:.0%} is outside the training range ({lo:.0%} to {hi:.0%}).")
     ratio = disb / gr if gr else 0
     p01, p99 = rng("DisbursedToApprovedRatio", "p01", 0.7), rng("DisbursedToApprovedRatio", "p99", 3.9)
     if not p01 <= ratio <= p99:
-        warnings.append(f"The disbursed amount is {ratio:.2f} times the approved amount, which is unusual "
-                        f"(98% of training loans lie between {p01:.2f} and {p99:.2f}).")
-    for name, value in [("NoEmp", noemp), ("Term", term), ("GrAppv", gr)]:
+        warnings.append(f"Disbursed is {ratio:.2f} times approved; 98% of training loans lie between {p01:.2f} and {p99:.2f}.")
+    for name, value in [("NoEmp", v["noemp"]), ("Term", term), ("GrAppv", gr)]:
         lo_, hi_ = rng(name, "p01", None), rng(name, "p99", None)
         if lo_ is not None and hi_ is not None and not lo_ <= value <= hi_:
             label = (raw_f.get(name) or feat_f.get(name) or {}).get("label", name)
-            warnings.append(f"{label} of {value:,.0f} is outside the range of 98% of training loans; treat the score with care.")
+            warnings.append(f"{label} of {value:,.0f} is outside the range of 98% of training loans.")
     return errors, warnings, sba_value
 
 
-if submitted:
-    errors, warnings, sba_value = validate()
-    if errors:
-        with left:
-            for e in errors:
-                st.error(e)
-        st.session_state.pop("score_result", None)
-    else:
-        row = {
-            "GrAppv": gr, "SBA_Appv": sba_value, "DisbursementGross": disb, "Term": term, "NoEmp": noemp,
-            "CreateJob": create, "RetainedJob": retain, "NewExist": new_exist, "IsFranchise": franchise,
-            "UrbanRural": urban, "RevLineCr": revline, "LowDoc": lowdoc, "Sector": sector, "State": state,
-            "Bank": bank, "BankState": bank_state, "Recession": int(recession),
-        }
-        start = time.perf_counter()
-        feats, p = score_rows(pd.DataFrame([row]))
-        p = float(p[0])
-        try:
-            contrib, method = U.local_contributions(model, feats)
-        except Exception as exc:  # noqa: BLE001
-            contrib, method = None, f"unavailable ({type(exc).__name__})"
-        elapsed = time.perf_counter() - start
-        st.session_state["score_result"] = {"p": p, "feats": feats, "contrib": contrib, "method": method, "row": row,
-                                            "elapsed": elapsed, "warnings": warnings, "id": f"{time.time():.0f}{p:.6f}",
-                                            "example": form_key, "fresh": True}
-        case = A.encode_case(row)
-        st.session_state["_case_loaded"] = case
-        try:
-            st.query_params["case"] = case
-        except Exception:  # noqa: BLE001
-            pass
+def download_row(label: str, key: str, data: bytes, file_name: str) -> None:
+    """A row of the Actions card whose press downloads a file: the kit's row with the download button over it."""
+    with st.container(key=f"row_{key}"):
+        U.html(f'<div class="ui-row"><div class="a">{ui.esc(label)}</div><div class="b"></div>'
+               '<span class="arrow">&#8250;</span></div>')
+        st.download_button(label, data, file_name=file_name, mime="text/html", key=key, use_container_width=True)
 
-result = st.session_state.get("score_result")
-t, d = U.threshold(), U.decline_threshold()
 
-with right:
-    if not result:
-        U.html(f'<div class="cl-card cl-empty">{U.icon("gauge", 40, "#8D99AE")}<h4 style="margin-top:12px">'
-               "No loan scored yet</h4><p>Complete the form and select Score this loan.</p></div>")
-    else:
-        p, feats = result["p"], result["feats"]
-        band = U.band_for(p)
-        decision = str(U.decisions([p], t, d)[0])
-        ev, el = U.expected_value([p], feats["DisbursementGross"], feats["Portion"])
-        gain, loss = U.value_components(feats["DisbursementGross"], feats["Portion"])
-        ev, el, gain, loss = float(ev[0]), float(el[0]), float(gain[0]), float(loss[0])
-        with st.container(key="result_card"):
-            if result.pop("fresh", False):
-                U.html(X.scoring_sequence(result["id"]))
-            for w in result["warnings"]:
-                st.warning(w)
-            U.html(
-                '<div class="cl-tile-label">Probability of default</div>'
-                f'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:4px 0 10px">'
-                f'<span class="cl-big" style="font-variant-numeric:tabular-nums;font-size:3.2rem;font-weight:800;'
-                f'letter-spacing:-0.04em;line-height:1;color:{U.INK}">{p:.1%}</span>{U.chip(band["name"] + " risk", band["colour"])}</div>'
-                f'<div style="margin:6px 0 6px">{U.decision_chip(decision)}</div>'
-            )
-            U.chart(U.gauge_figure(p, t), height=230, key="gauge")
-            U.html(f'<div class="cl-page-intro" style="font-size:0.85rem;margin:-6px 0 14px">Approve below {t:.1%}, '
-                   f"refer from {t:.1%} to {d:.1%}, decline from {d:.1%}.</div>")
-            U.tiles([
-                {"label": "Expected net value", "value": U.fmt_usd(ev), "sub": "If approved",
-                 "accent": U.COLOURS["teal"] if ev >= 0 else U.COLOURS["red"]},
-                {"label": "Expected loss", "value": U.fmt_usd(el), "sub": "PD x loss if default", "accent": U.COLOURS["red"]},
-                {"label": "Gain if repaid", "value": U.fmt_usd(gain), "sub": "Net interest margin", "accent": U.COLOURS["navy"]},
-            ], cols=3, min_width=112, compact=True)
-            disb_v, portion_v = float(feats["DisbursementGross"].iloc[0]), float(feats["Portion"].iloc[0])
-            c = U.cost_assumptions()
-            with st.expander("How the expected value is calculated"):
-                st.code(
-                    U.formula_text() + "\n\n"
-                    f"This loan: disbursed USD {disb_v:,.0f}, guaranteed share {portion_v:.0%}, PD {p:.4f}\n"
-                    f"Loss if default = {c['LOSS_GIVEN_DEFAULT']:.2f} x {1 - portion_v:.2f} x {disb_v:,.0f} + "
-                    f"{c['WORKOUT_COST_RATE']:.2f} x {disb_v:,.0f} = USD {loss:,.0f}\n"
-                    f"Expected value = (1 - {p:.4f}) x {gain:,.0f} - {p:.4f} x {loss:,.0f} = USD {ev:,.0f}",
-                    language=None,
-                )
-            contrib = result["contrib"]
+
+
+def sheet_row(item: dict, key: str) -> bool:
+    """A row that opens a sheet, drawn as the kit's row, with its own button key (kept for the tests)."""
+    a_small = f'<small>{ui.esc(item["a_small"])}</small>' if item.get("a_small") else ""
+    b_small = f'<small>{ui.esc(item["b_small"])}</small>' if item.get("b_small") else ""
+    with st.container(key=f"row_{key}"):
+        U.html(f'<div class="ui-row"><div class="a">{ui.esc(item["a"])}{a_small}</div>'
+               f'<div class="b">{ui.esc(item.get("b", ""))}{b_small}</div><span class="arrow">&#8250;</span></div>')
+        return st.button(f"Open {item['a']}", key=key, use_container_width=True)
+
+
+def whatif_moved() -> bool:
+    """True when a what-if slider changed in a full rerun, so the sheet that holds it is opened again."""
+    snap = st.session_state.get("_wi_snap") or {}
+    try:
+        return any(k in st.session_state and st.session_state[k] != v for k, v in snap.items())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Pictures for the sheet
+# ---------------------------------------------------------------------------
+
+def what_if(base: dict, rid: str, p_base: float) -> None:
+    """Rescore this applicant as three terms change; inside the sheet only the sheet reruns."""
+    with st.container(key="whatif"):
+        line = st.container()
+        gr0 = float(base["GrAppv"])
+        portion0 = float(np.clip(base["SBA_Appv"] / gr0, 0.05, 1.0))
+        dmax = float(min(rng("DisbursementGross", "max", 1.2e7), max(4 * base["DisbursementGross"], 500_000)))
+        s1, s2, s3 = st.columns(3)
+        w_term = s1.slider("Term (months)", 1, 480, int(base["Term"]), key=f"wi_term_{rid}")
+        w_share = s2.slider("Guaranteed share", 0.05, 1.0, round(portion0, 2), 0.01, key=f"wi_share_{rid}")
+        w_disb = s3.slider("Amount disbursed (USD)", 5_000, int(dmax), int(round(base["DisbursementGross"], -3)),
+                           5_000, key=f"wi_disb_{rid}")
+        st.session_state["_wi_snap"] = {f"wi_term_{rid}": w_term, f"wi_share_{rid}": w_share, f"wi_disb_{rid}": w_disb}
+        grid = sorted(set(list(range(12, 481, 12)) + [w_term]))
+        rows = pd.DataFrame([{**base, "Term": m, "SBA_Appv": w_share * gr0, "DisbursementGross": float(w_disb)}
+                             for m in grid])
+        _, p_grid = score_rows(rows)
+        p_new = float(p_grid[grid.index(w_term)])
+        dec_new = WORDS[str(U.decisions([p_new], t, d)[0])]
+        ev_new, el_new = U.expected_value([p_new], [float(w_disb)], [w_share])
+        change = (p_new - p_base) * 100
+        with line:
+            U.html(ui.rows([{"a": "What if: PD in this scenario", "a_small": f"Value {ui.money(float(ev_new[0]))}, "
+                                                                            f"loss {ui.money(float(el_new[0]))}",
+                             "badge": dec_new, "b_small": f"PD {ui.pct(p_new)}, {change:+.1f} pts"}]))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=grid, y=np.asarray(p_grid) * 100, mode="lines", name="PD by term",
+                                 line=dict(color=ui.CHART["accent"], width=2.5),
+                                 hovertemplate="%{x} months<br>PD %{y:.1f}%<extra></extra>"))
+        fig.add_trace(go.Scatter(x=[w_term], y=[p_new * 100], mode="markers", name="This scenario",
+                                 marker=dict(size=12, color=ui.tone_colour(dec_new), line=dict(color="#ffffff", width=2)),
+                                 hovertemplate="This scenario<br>%{x} months, PD %{y:.1f}%<extra></extra>"))
+        fig.add_hline(y=t * 100, line_color=ui.CHART["ink"], line_dash="dot", line_width=1.5,
+                      annotation_text=f"approval threshold {t:.0%}", annotation_position="top left",
+                      annotation_font=dict(size=12, color=ui.CHART["muted"]))
+        fig.add_hline(y=d * 100, line_color=ui.CHART["bad"], line_dash="dot", line_width=1.5,
+                      annotation_text=f"decline from {d:.0%}", annotation_position="top left",
+                      annotation_font=dict(size=12, color=ui.CHART["bad"]))
+        ui.chart_layout(fig, "PD by term")
+        fig.update_layout(showlegend=False, xaxis=dict(title="Term (months)", range=[0, 486]),
+                          yaxis=dict(title="PD (%)", range=[0, max(100 * float(np.max(p_grid)) * 1.2, d * 120)]))
+        U.chart(fig, height=340, key="whatif_curve")
+
+
+def picture_value(p: float, gain: float, loss: float, ev: float) -> None:
+    grid = np.linspace(0, 1, 201)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=grid, y=(1 - grid) * gain, mode="lines", name="Gain if repaid, weighted",
+                             line=dict(color=ui.CHART["good"], width=2, dash="dot"),
+                             hovertemplate="PD %{x:.0%}<br>(1 - PD) x gain USD %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=grid, y=-grid * loss, mode="lines", name="Loss if default, weighted",
+                             line=dict(color=ui.CHART["bad"], width=2, dash="dot"),
+                             hovertemplate="PD %{x:.0%}<br>PD x loss USD %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=grid, y=(1 - grid) * gain - grid * loss, mode="lines", name="Expected net value",
+                             line=dict(color=ui.CHART["accent"], width=2.5),
+                             hovertemplate="PD %{x:.0%}<br>Expected net value USD %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=[p], y=[ev], mode="markers", name="This loan", showlegend=False,
+                             marker=dict(size=12, color=ui.CHART["ink"], line=dict(color="#ffffff", width=2)),
+                             hovertemplate="This loan<br>PD %{x:.1%}, value USD %{y:,.0f}<extra></extra>"))
+    even = gain / (gain + loss) if gain + loss else 0.0
+    fig.add_vline(x=t, line_color=ui.CHART["ink"], line_dash="dot", line_width=1.5)
+    fig.add_annotation(x=t, y=1.0, yref="paper", text=f"approval threshold {t:.0%}", showarrow=False, xanchor="left",
+                       xshift=6, yshift=-6, font=dict(size=12, color=ui.CHART["muted"]))
+    fig.add_hline(y=0, line_color=ui.CHART["hairline"], line_width=1)
+    fig.add_annotation(x=even, y=0, text=f"break-even PD {even:.1%}", showarrow=False, yshift=12, xanchor="left",
+                       xshift=6, font=dict(size=12, color=ui.CHART["muted"]))
+    ui.chart_layout(fig, "Expected value against PD")
+    fig.update_layout(xaxis=dict(title="Probability of default", tickformat=".0%", range=[0, 1]),
+                      yaxis=dict(title="Value to the bank (USD)", tickformat=",.0f"))
+    U.chart(fig, height=380, key="value_curve")
+
+
+def picture_band(feats: pd.DataFrame, ref) -> None:
+    if ref is None:
+        U.html(ui.empty("The reference sample of training loans is missing: run notebook 05 to write it."))
+        return
+    ref_df = ref[0]
+    row0 = feats.iloc[0]
+    jobs = float(row0["CreateJob"] + row0["RetainedJob"])
+    dims = [
+        ("Term", float(row0["TermYears"]), ref_df["TermYears"], f"{row0['TermYears']:.1f} years"),
+        ("Amount disbursed", float(row0["DisbursementGross"]), ref_df["DisbursementGross"],
+         ui.money(float(row0["DisbursementGross"]))),
+        ("Guaranteed share", float(row0["Portion"]), ref_df["Portion"], f"{row0['Portion']:.0%}"),
+        ("Employees", float(row0["NoEmp"]), ref_df["NoEmp"], f"{row0['NoEmp']:,.0f}"),
+        ("Jobs created or retained", jobs, ref_df["CreateJob"] + ref_df["RetainedJob"], f"{jobs:,.0f}"),
+    ][::-1]
+    pcts = [A.percentile_rank(v.to_numpy(), x) for _, x, v, _ in dims]
+    fig = go.Figure(go.Bar(
+        x=pcts, y=[n for n, *_ in dims], orientation="h", marker_color=ui.CHART["accent"],
+        text=[f"{lab}, {q:.0f}th" for (_, _, _, lab), q in zip(dims, pcts)], textposition="outside",
+        textfont=dict(size=12, color=ui.CHART["ink"]), cliponaxis=False,
+        hovertemplate="%{y}<br>Percentile %{x:.0f}<extra></extra>"))
+    fig.add_vline(x=50, line_color=ui.CHART["ink"], line_dash="dot", line_width=1.5)
+    fig.add_annotation(x=50, y=1.0, yref="paper", text="median of training loans", showarrow=False, xanchor="left",
+                       xshift=6, yshift=-6, font=dict(size=12, color=ui.CHART["muted"]))
+    ui.chart_layout(fig, "How this applicant compares")
+    fig.update_layout(showlegend=False, bargap=0.35,
+                      xaxis=dict(title=f"Percentile among {len(ref_df):,} training loans", range=[0, 118]),
+                      yaxis=dict(automargin=True))
+    U.chart(fig, height=360, key="band_bars")
+
+
+# ---------------------------------------------------------------------------
+# The page: the form on the left, the result on the right
+# ---------------------------------------------------------------------------
+
+if st.session_state.get("example") not in EXAMPLES:
+    st.session_state["example"] = "borderline"
+form_key = st.session_state.get("example", "borderline")
+example = form_values(form_key)
+vals = None
+submitted = False
+
+with st.container(key="two"):
+    left, right = st.columns([1.05, 1], gap="medium")
+
+    with left:
+        with st.container(key="form_card"):
+            with st.container(key="examples"):
+                ec = st.columns(3)
+                for col, key in zip(ec, ["borderline", "low", "high"]):
+                    col.button(EXAMPLE_LABELS[key], key=f"btn_{key}", use_container_width=True,
+                               type="primary" if key == form_key else "secondary")  # a press was read at the top
+            guarantee_mode = st.radio("Guarantee entered as", ["Guaranteed amount (USD)", "Guaranteed share"],
+                                      horizontal=True, key=f"mode_{form_key}",
+                                      help="Give either the guaranteed amount or the share of the approved amount it covers.")
+            err_slot = st.container()
+            with st.form(f"loan_form_{form_key}", border=False):
+                U.html(ui.eyebrow("Loan"))
+                c1, c2, c3 = st.columns(3)
+                gr = c1.number_input("Approved (USD)", min_value=rng("GrAppv", "min", 1000.0),
+                                     max_value=rng("GrAppv", "max", 5e6), value=float(example["GrAppv"]), step=5_000.0,
+                                     format="%.0f", help=help_text("GrAppv") or "Loan amount approved.")
+                if guarantee_mode == "Guaranteed amount (USD)":
+                    sba = c2.number_input("Guaranteed (USD)", min_value=0.0, max_value=rng("SBA_Appv", "max", 5e6),
+                                          value=float(example["SBA_Appv"]), step=5_000.0, format="%.0f",
+                                          help=help_text("SBA_Appv"))
+                    share = None
+                else:
+                    share = c2.number_input("Guaranteed share", min_value=0.0, max_value=1.0,
+                                            value=float(example["Portion"]), step=0.05, format="%.2f",
+                                            help=help_text("Portion"))
+                    sba = None
+                disb = c3.number_input("Disbursed (USD)", min_value=rng("DisbursementGross", "min", 4000.0),
+                                       max_value=rng("DisbursementGross", "max", 1.2e7),
+                                       value=float(example["DisbursementGross"]), step=5_000.0, format="%.0f",
+                                       help=help_text("DisbursementGross"))
+                c1, c2, c3 = st.columns(3)
+                term = c1.number_input("Term (months)", min_value=1, max_value=480, value=int(example["Term"]), step=6,
+                                       help="Scheduled term of the loan in months, 1 to 480.")
+                revline = c2.selectbox("Revolving line", ["N", "Y"], index=["N", "Y"].index(example["RevLineCr"]),
+                                       format_func=yes_no.get, help="Whether the loan is a revolving line of credit.")
+                lowdoc = c3.selectbox("LowDoc programme", ["N", "Y"], index=["N", "Y"].index(example["LowDoc"]),
+                                      format_func=yes_no.get, help=(feat_f.get("LowDoc") or {}).get("help", ""))
+                U.html(ui.eyebrow("Business"))
+                c1, c2, c3 = st.columns(3)
+                noemp = c1.number_input("Employees", min_value=0, max_value=int(rng("NoEmp", "max", 300)),
+                                        value=int(example["NoEmp"]), help=help_text("NoEmp"))
+                create = c2.number_input("Jobs created", min_value=0, max_value=int(rng("CreateJob", "max", 200)),
+                                         value=int(example["CreateJob"]), help=help_text("CreateJob"))
+                retain = c3.number_input("Jobs retained", min_value=0, max_value=int(rng("RetainedJob", "max", 280)),
+                                         value=int(example["RetainedJob"]), help=help_text("RetainedJob"))
+                c1, c2, c3 = st.columns(3)
+                new_exist = c1.selectbox("Business age", ["Existing", "New"],
+                                         index=["Existing", "New"].index(example["NewExist"]),
+                                         format_func=lambda v: {"Existing": "Over 2 years", "New": "2 years or less"}[v])
+                franchise = c2.selectbox("Franchise", ["N", "Y"], index=["N", "Y"].index(example["IsFranchise"]),
+                                         format_func=yes_no.get, help=(feat_f.get("IsFranchise") or {}).get("help", ""))
+                urban = c3.selectbox("Location", ["Urban", "Rural"], index=["Urban", "Rural"].index(example["UrbanRural"]),
+                                     help="Urban or rural location of the business.")
+                U.html(ui.eyebrow("Lender and scenario"))
+                c1, c2, c3 = st.columns(3)
+                sector = c1.selectbox("Industry sector", sectors, index=sectors.index(example["Sector"]),
+                                      help=(feat_f.get("Sector") or {}).get("help", ""))
+                state = c2.selectbox("Borrower state", states, index=states.index(example["State"]),
+                                     help=(feat_f.get("State") or {}).get("help", ""))
+                bank_state = c3.selectbox("Bank state", bank_states, index=bank_states.index(example["BankState"]),
+                                          help=(feat_f.get("BankState") or {}).get("help", ""))
+                c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+                bank = c1.selectbox("Lending bank", bank_options, index=bank_options.index(example["Bank"]),
+                                    help="Type to search the banks in the training data. A bank not listed is scored "
+                                         "with the overall historical default rate.")
+                recession = c2.toggle("Recession stress", value=bool(example["Recession"]),
+                                      help="Scores the loan as if it ran through the 2007 to 2009 recession.")
+                submitted = st.form_submit_button("Score application", type="primary", use_container_width=True)
+            vals = {"gr": gr, "sba": sba, "share": share, "disb": disb, "term": term, "noemp": noemp, "create": create,
+                    "retain": retain, "new_exist": new_exist, "franchise": franchise, "urban": urban,
+                    "revline": revline, "lowdoc": lowdoc, "sector": sector, "state": state, "bank": bank,
+                    "bank_state": bank_state, "recession": recession}
+
+    if st.session_state.pop("auto_score", False):
+        # an example, a shared link or the first visit: score the example as it is stored
+        submitted = True
+        ex = form_values(form_key)
+        vals = {"gr": float(ex["GrAppv"]), "sba": float(ex["SBA_Appv"]), "share": None,
+                "disb": float(ex["DisbursementGross"]), "term": int(ex["Term"]), "noemp": int(ex["NoEmp"]),
+                "create": int(ex["CreateJob"]), "retain": int(ex["RetainedJob"]), "new_exist": ex["NewExist"],
+                "franchise": ex["IsFranchise"], "urban": ex["UrbanRural"], "revline": ex["RevLineCr"],
+                "lowdoc": ex["LowDoc"], "sector": ex["Sector"], "state": ex["State"], "bank": ex["Bank"],
+                "bank_state": ex["BankState"], "recession": bool(ex["Recession"])}
+
+    if submitted and vals is not None:
+        errors, warnings, sba_value = validate(vals)
+        if errors:
+            st.session_state.pop("score_result", None)
+            result = None
+            with err_slot:
+                U.html("".join(ui.note(e, "bad") for e in errors))
+        else:
+            v = vals
+            row = {
+                "GrAppv": v["gr"], "SBA_Appv": sba_value, "DisbursementGross": v["disb"], "Term": v["term"],
+                "NoEmp": v["noemp"], "CreateJob": v["create"], "RetainedJob": v["retain"], "NewExist": v["new_exist"],
+                "IsFranchise": v["franchise"], "UrbanRural": v["urban"], "RevLineCr": v["revline"], "LowDoc": v["lowdoc"],
+                "Sector": v["sector"], "State": v["state"], "Bank": v["bank"], "BankState": v["bank_state"],
+                "Recession": int(v["recession"]),
+            }
+            start = time.perf_counter()
+            feats, p = score_rows(pd.DataFrame([row]))
+            p = float(p[0])
+            try:
+                contrib, method = U.local_contributions(model, feats)
+            except Exception as exc:  # noqa: BLE001
+                contrib, method = None, f"unavailable ({type(exc).__name__})"
+            elapsed = time.perf_counter() - start
+            st.session_state["score_result"] = {"p": p, "feats": feats, "contrib": contrib, "method": method, "row": row,
+                                                "elapsed": elapsed, "warnings": warnings,
+                                                "id": f"{time.time():.0f}{p:.6f}", "example": form_key}
+            case = A.encode_case(row)
+            st.session_state["_case_loaded"] = case
+            try:
+                st.query_params["case"] = case
+            except Exception:  # noqa: BLE001
+                pass
+            st.session_state["score_edit"] = False
+            result = st.session_state["score_result"]
+
+    ref = U.reference_space() if result else None
+
+    with right:
+        if not result:
+            with st.container(key="score_panel"):
+                U.html(ui.card_html("Probability of default", None,
+                                    ui.empty("No loan scored yet. Complete the form and select Score.")))
+        else:
+            p, feats, contrib, row = result["p"], result["feats"], result["contrib"], result["row"]
+            band = U.band_for(p)
+            decision = str(U.decisions([p], t, d)[0])
+            ev, el = U.expected_value([p], feats["DisbursementGross"], feats["Portion"])
+            gain, loss = U.value_components(feats["DisbursementGross"], feats["Portion"])
+            ev, el, gain, loss = float(ev[0]), float(el[0]), float(gain[0]), float(loss[0])
+            portion_v = float(feats["Portion"].iloc[0])
+
+            # The dark result panel: PD, decision and band, the policy line, then value, loss and gain
+            with st.container(key="score_panel"):
+                U.html(ui.figure_html("", ui.pct(p), "Probability of default", hero=True,
+                                      count_to=round(p * 100, 1), decimals=1, suffix="%", fid="pd"))
+                U.html(f"<div>{ui.badge(decision, large=True)} {ui.badge(band['name'])}</div>")
+                U.html(ui.card_html("", f"Approve below {t:.1%} / Decline from {d:.1%}", ""))
+                U.html('<div style="--n:3">' + ui.pair([
+                    ("Expected net value", ui.money(ev), None),
+                    ("Expected loss", ui.money(el), None),
+                    ("Gain if repaid", ui.money(gain), None),
+                ]) + "</div>")
+                if result["warnings"]:
+                    U.html("".join(ui.note(w, "warning") for w in result["warnings"]))
+
+            # What drives this score: the top inputs as a compact table, then the row that opens the sheet
+            with st.container(key="sheet_rows_drivers"):
+                line = f"SHAP contributions in log-odds. Scored in {result['elapsed']:.2f} s"
+                if contrib is not None and len(contrib):
+                    body = ui.rows([
+                        {"a": U.short_label(r["feature"]), "a_small": str(r["value"]) if r["value"] else "",
+                         "badge": "Raises risk" if r["contribution"] > 0 else "Lowers risk",
+                         "b_small": f"{r['contribution']:+.2f} log-odds"}
+                        for _, r in contrib.head(3).iterrows()
+                    ])
+                else:
+                    body = ui.empty(f"No per-loan explanation for this model ({result['method']}).")
+                U.html(ui.card_html("What drives this score", line, body))
+                near_b, near_bs = "", ""
+                if ref is not None:
+                    ref_df, Z, mean, scale, ref_cols = ref
+                    idx, dist = A.nearest(Z, mean, scale, feats.iloc[[0]], ref_cols, k=10)
+                    k_def = int(ref_df.iloc[idx]["Default"].sum())
+                    near_b, near_bs = f"{k_def} of {len(idx)}", "similar loans defaulted"
+                    st.session_state["score_near"] = (idx, dist)
+                if sheet_row({"a": "See the what-if and similar loans",
+                              "a_small": "What if by term · How this applicant compares · Ten most similar past loans",
+                              "b": near_b, "b_small": near_bs}, key="btn_figures_decision"):
+                    st.session_state["score_sheet"] = "whatif"
+
+            # Actions: the memo downloads, the share link and the form
             drivers = U.explanation_sentences(contrib) if contrib is not None and len(contrib) else []
-            row = result["row"]
             memo_inputs = {
                 "Loan amount approved": f"USD {row['GrAppv']:,.0f}", "Guaranteed amount": f"USD {row['SBA_Appv']:,.0f}",
                 "Guaranteed share": f"{portion_v:.0%}", "Amount disbursed": f"USD {row['DisbursementGross']:,.0f}",
                 "Term": f"{row['Term']} months", "Revolving line of credit": yes_no[row["RevLineCr"]],
                 "LowDoc programme": yes_no[row["LowDoc"]], "Employees": row["NoEmp"], "Jobs created": row["CreateJob"],
-                "Jobs retained": row["RetainedJob"], "Business age": row["NewExist"], "Franchise": yes_no[row["IsFranchise"]],
-                "Location": row["UrbanRural"], "Industry sector": row["Sector"], "Borrower state": row["State"],
-                "Lending bank": row["Bank"].title(), "Bank state": row["BankState"],
+                "Jobs retained": row["RetainedJob"], "Business age": row["NewExist"],
+                "Franchise": yes_no[row["IsFranchise"]], "Location": row["UrbanRural"], "Industry sector": row["Sector"],
+                "Borrower state": row["State"], "Lending bank": row["Bank"].title(), "Bank state": row["BankState"],
                 "Recession stress": "On" if row["Recession"] else "Off",
             }
             memo = U.memo_html(memo_inputs, p, band, decision, ev, el, gain, loss, drivers, t, d)
-            m1, m2 = st.columns(2)
-            m1.download_button("Download decision memo", memo.encode("utf-8"), file_name="creditlens_credit_memo.html",
-                               mime="text/html", type="secondary", use_container_width=True, key="memo",
-                               icon=":material/description:")
             memo_print = U.memo_html(memo_inputs, p, band, decision, ev, el, gain, loss, drivers, t, d,
                                      contrib=contrib, printable=True)
-            m2.download_button("PDF-ready memo", memo_print.encode("utf-8"), file_name="creditlens_credit_memo_print.html",
-                               mime="text/html", type="secondary", use_container_width=True, key="memo_print",
-                               icon=":material/print:",
-                               help="A print-styled page with a Print or save as PDF button; open it in a browser.")
-            case = A.encode_case(row)
-            host = st.context.headers.get("host", "") if hasattr(st, "context") else ""
-            scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
-            link = f"{scheme}://{host}/score?case={case}" if host else f"/score?case={case}"
-            with st.expander("Share this case"):
-                st.code(link, language=None)
-                st.caption("Anyone with the link sees this application scored with the same model. The link holds the "
-                           "form values only.")
-            st.caption(f"Scored and explained in {result['elapsed']:.2f} seconds.")
+            with st.container(key="sheet_rows_actions"):
+                U.html(ui.card_html("Actions", None, ""))
+                download_row("Download memo", "memo", memo.encode("utf-8"), "creditlens_credit_memo.html")
+                download_row("PDF-ready memo", "memo_print", memo_print.encode("utf-8"), "creditlens_credit_memo_print.html")
+                if ui.row_button({"a": "Share link", "a_small": "Opening it scores this application again"},
+                                 key="score_share"):
+                    st.session_state["score_sheet"] = "share"
+                ui.row_button({"a": "Edit application", "a_small": "The form on the left"}, key="edit")  # read at the top
 
-if result:
-    p, feats, contrib = result["p"], result["feats"], result["contrib"]
-    band = U.band_for(p)
-    decision = str(U.decisions([p], t, d)[0])
 
-    U.section_title("What drives this score", "chart")
-    c1, c2 = st.columns([1.5, 1], gap="large")
-    if contrib is not None and len(contrib):
-        top = contrib.head(10).iloc[::-1].reset_index(drop=True)
-        vmax = float(top["contribution"].abs().max()) or 1.0
-        labels = [f"{U.short_label(f)}: {val}" if val else U.short_label(f) for f, val in zip(top["feature"], top["value"])]
-        labels = [s if len(s) <= 30 else s[:28] + ".." for s in labels]
-        fig = go.Figure(go.Bar(
-            x=top["contribution"], y=list(range(len(top))), orientation="h",
-            marker=dict(color=[U.COLOURS["red"] if v > 0 else U.COLOURS["teal"] for v in top["contribution"]]),
-            customdata=labels, hovertemplate="%{customdata}<br>Contribution %{x:.3f}<extra></extra>",
-        ))
-        for i, (v, lab) in enumerate(zip(top["contribution"], labels)):
-            # The label sits on the empty side of the zero line, next to its bar
-            fig.add_annotation(x=0, y=i, text=lab, showarrow=False, xanchor="right" if v > 0 else "left",
-                               xshift=-8 if v > 0 else 8, font=dict(size=12, color=U.INK))
-        fig.add_vline(x=0, line_color="#8D99AE", line_width=1)
-        fig.update_layout(barcornerradius=7, bargap=0.28, yaxis=dict(visible=False),
-                          xaxis=dict(title="Contribution to the score (log-odds)", range=[-1.12 * vmax, 1.12 * vmax],
-                                     zeroline=False),
-                          margin=dict(l=8, r=8, t=16, b=40))
-        with c1:
-            U.chart(fig, height=36 * len(top) + 90, key="shap_chart")
-        with c2:
-            if decision == "Approve":
-                lead = f"below the approval threshold of {t:.1%}, so CreditLens recommends approval."
-            elif decision == "Refer":
-                lead = f"between the approval threshold of {t:.1%} and the decline level of {d:.1%}, so CreditLens recommends manual review."
-            else:
-                lead = f"at or above the decline level of {d:.1%}, so CreditLens recommends declining."
-            items = "".join(f"<li>{s}</li>" for s in U.explanation_sentences(contrib))
-            U.html(f'<div class="cl-card cl-reading"><h4>Plain-language reading</h4><p style="color:{U.INK}">'
-                   f"A probability of default of <b>{p:.1%}</b> places this loan in the {band['name'].lower()} risk band, "
-                   f"{lead}</p><ul style='margin-top:12px'>{items}</ul></div>")
-            st.caption(f"Method: {result['method']}. Coral bars raise the risk, teal bars lower it; one-hot levels are "
-                       "summed per input.")
-    else:
-        with c1:
-            st.info("A per-loan explanation could not be computed for this model, so the global importance is shown.")
-            g = U.global_importance(10)
-            if g is not None:
-                fig = go.Figure(go.Bar(x=g["importance"][::-1], y=g["label"][::-1], orientation="h",
-                                       marker_color=U.COLOURS["navy"]))
-                fig.update_layout(xaxis_title="Mean absolute SHAP value", barcornerradius=6)
-                U.chart(fig, height=380)
+# ---------------------------------------------------------------------------
+# Sheets
+# ---------------------------------------------------------------------------
 
-    U.section_title("How this applicant compares", "users")
-    ref = U.reference_space()
-    if ref is None:
-        st.info("The reference sample of training loans (app/assets/aggregates) is not available.")
-    else:
-        ref_df, Z, mean, scale, ref_cols = ref
-        row0 = feats.iloc[0]
-        jobs = float(row0["CreateJob"] + row0["RetainedJob"])
-        dims = [
-            ("Term", float(row0["TermYears"]), ref_df["TermYears"], f"{row0['TermYears']:.1f} years"),
-            ("Amount", float(row0["DisbursementGross"]), ref_df["DisbursementGross"], U.fmt_usd(float(row0["DisbursementGross"]))),
-            ("Guaranteed share", float(row0["Portion"]), ref_df["Portion"], f"{row0['Portion']:.0%}"),
-            ("Employees", float(row0["NoEmp"]), ref_df["NoEmp"], f"{row0['NoEmp']:,.0f}"),
-            ("Jobs", jobs, ref_df["CreateJob"] + ref_df["RetainedJob"], f"{jobs:,.0f} created or retained"),
-        ]
-        pct = [A.percentile_rank(v.to_numpy(), x) for _, x, v, _ in dims]
-        names = [n for n, *_ in dims]
-        r1, r2 = st.columns([1.1, 1], gap="large")
-        with r1:
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(r=[50] * 6, theta=names + names[:1], mode="lines", name="Median training loan",
-                                          line=dict(color=U.COLOURS["grey"], dash="dot", width=1.5), hoverinfo="skip"))
-            fig.add_trace(go.Scatterpolar(
-                r=pct + pct[:1], theta=names + names[:1], fill="toself", name="This application",
-                fillcolor=U.hex_rgba(U.COLOURS["teal"], 0.25), line=dict(color=U.COLOURS["teal"], width=3),
-                marker=dict(size=9, color=U.COLOURS["teal"], line=dict(color="#FFFFFF", width=2)),
-                customdata=[[lab] for *_, lab in dims] + [[dims[0][3]]],
-                hovertemplate="<b>%{theta}</b>: %{customdata[0]}<br>Higher than %{r:.0f}% of training loans<extra></extra>"))
-            fig.update_layout(title="Applicant against the training portfolio (percentile)",
-                              polar=dict(bgcolor="rgba(0,0,0,0)",
-                                         radialaxis=dict(range=[0, 100], ticksuffix="", tickvals=[25, 50, 75, 100],
-                                                         gridcolor=U.GRID, tickfont=dict(size=10, color=U.MUTED)),
-                                         angularaxis=dict(gridcolor=U.GRID, tickfont=dict(size=12, color=U.INK))),
-                              legend=dict(orientation="h", y=-0.12), margin=dict(l=40, r=40, t=70, b=30))
-            U.chart(fig, height=390, key="radar")
-            st.caption(f"Percentile of each input among {len(ref_df):,} training loans: 50 is the median loan.")
-        with r2:
-            idx, dist = A.nearest(Z, mean, scale, feats.iloc[[0]], ref_cols, k=10)
+@st.dialog("What if and similar loans", width="large")
+def whatif_sheet(res: dict) -> None:
+    feats, p = res["feats"], res["p"]
+    ev, _ = U.expected_value([p], feats["DisbursementGross"], feats["Portion"])
+    gain, loss = U.value_components(feats["DisbursementGross"], feats["Portion"])
+    ev, gain, loss = float(ev[0]), float(gain[0]), float(loss[0])
+    tabs = st.tabs(["What if by term", "How this applicant compares", "Similar loans", "Value against PD", "Method"])
+    with tabs[0]:
+        what_if(res["row"], res["id"], p)
+    with tabs[1]:
+        picture_band(feats, U.reference_space())
+    with tabs[2]:
+        near_state = st.session_state.get("score_near")
+        ref = U.reference_space()
+        if ref is None or near_state is None:
+            U.html(ui.empty("The reference sample of training loans is missing: run notebook 05 to write it."))
+        else:
+            idx, dist = near_state
+            ref_df = ref[0]
             near = ref_df.iloc[idx]
             k_def = int(near["Default"].sum())
-            rate = k_def / len(near)
-            dots = "".join(f'<i style="background:{U.COLOURS["red"] if v else U.COLOURS["teal"]}" '
-                           f'title="{"Charged off" if v else "Repaid"}"></i>' for i, v in enumerate(near["Default"]))
-            if abs(rate - p) <= 0.10:
-                reading = "which is close to the model's estimate for this application."
-            elif rate > p:
-                reading = "a worse record than the model's estimate, so the score leans on factors the neighbours do not share."
-            else:
-                reading = "a better record than the model's estimate, so other factors such as the lender or sector push the score up."
-            U.html(
-                f'<div class="cl-card"><h4>{U.icon("users", 18)} Ten most similar past loans</h4>'
-                f'<div style="display:flex;align-items:baseline;gap:12px"><span class="cl-big-num">{rate:.0%}</span>'
-                f'<span class="cl-muted">defaulted ({k_def} of {len(near)})</span></div>'
-                f'<div class="cl-mix"><span style="width:{100 - rate * 100:.0f}%;background:{U.COLOURS["teal"]}"></span>'
-                f'<span style="width:{rate * 100:.0f}%;background:{U.COLOURS["red"]}"></span></div>'
-                f'<div class="cl-mix-legend"><span>Repaid {len(near) - k_def}</span><span>Charged off {k_def}</span></div>'
-                f'<div class="cl-dots">{dots}</div>'
-                f'<p>Of the ten training loans closest to this one in term, size, guarantee, staff and jobs, {k_def} '
-                f'were charged off, {reading} The model puts this loan at {p:.1%}.</p></div>')
-            with st.expander("See the ten loans"):
-                show = pd.DataFrame({
-                    "Term (months)": near["Term"].astype(int).to_numpy(),
-                    "Disbursed (USD)": near["DisbursementGross"].round(0).to_numpy(),
-                    "Guaranteed share": near["Portion"].to_numpy(),
-                    "Employees": near["NoEmp"].astype(int).to_numpy(),
-                    "Sector": near["Sector"].to_numpy(), "State": near["State"].to_numpy(),
-                    "Outcome": np.where(near["Default"] == 1, "Charged off", "Repaid"),
-                    "Distance": dist.round(2),
-                })
-                st.dataframe(show, hide_index=True, use_container_width=True, column_config={
-                    "Disbursed (USD)": st.column_config.NumberColumn(format="localized"),
-                    "Guaranteed share": st.column_config.NumberColumn(format="percent")})
-                st.caption("Distance in the standardised space of the numeric model inputs (counts and money per "
-                           "employee on a log scale), from a committed sample of training loans.")
+            U.html(ui.pair([("Defaulted", f"{k_def / len(near):.0%}", f"{k_def} of {len(near)}"),
+                            ("Model PD", ui.pct(p), U.band_for(p)["name"])]))
+            U.html(ui.eyebrow("Ten most similar past loans"))
+            table = pd.DataFrame({
+                "Term (months)": near["Term"].astype(int).to_numpy(),
+                "Disbursed (USD)": near["DisbursementGross"].round(0).to_numpy(),
+                "Guaranteed share": near["Portion"].to_numpy(),
+                "Employees": near["NoEmp"].astype(int).to_numpy(),
+                "Sector": near["Sector"].to_numpy(), "State": near["State"].to_numpy(),
+                "Outcome": np.where(near["Default"] == 1, "Charged off", "Repaid"),
+                "Distance": np.asarray(dist).round(2),
+            })
+            st.dataframe(table, hide_index=True, use_container_width=True, column_config={
+                "Disbursed (USD)": st.column_config.NumberColumn(format="localized"),
+                "Guaranteed share": st.column_config.NumberColumn(format="percent")})
+            U.html(ui.note(f"Nearest neighbours in the standardised numeric inputs, from a committed sample of "
+                           f"{len(ref_df):,} training loans.", "accent"))
+    with tabs[3]:
+        picture_value(p, gain, loss, ev)
+    with tabs[4]:
+        if res["contrib"] is not None and len(res["contrib"]):
+            U.html(ui.eyebrow("This application")
+                   + "".join(ui.note(s, "accent") for s in U.explanation_sentences(res["contrib"])))
+        U.html(ui.eyebrow("How this is worked out") + "".join(ui.note(s, "accent") for s in [
+            f"Decision: approve below {t:.1%}, refer from {t:.1%} to {d:.1%}, decline from {d:.1%}.",
+            f"Drivers are SHAP contributions in log-odds; one-hot levels are summed per input ({res['method']}).",
+            "What if rescores this applicant only; the form is not changed.",
+            "Similar loans are the nearest neighbours in the standardised numeric inputs (counts and money per employee "
+            "on a log scale), from a committed sample of training loans.",
+        ]))
+        disb_v, portion_v = float(feats["DisbursementGross"].iloc[0]), float(feats["Portion"].iloc[0])
+        c = U.cost_assumptions()
+        st.code(
+            U.formula_text() + "\n\n"
+            f"This loan: disbursed USD {disb_v:,.0f}, guaranteed share {portion_v:.0%}, PD {p:.4f}\n"
+            f"Loss if default = {c['LOSS_GIVEN_DEFAULT']:.2f} x {1 - portion_v:.2f} x {disb_v:,.0f} + "
+            f"{c['WORKOUT_COST_RATE']:.2f} x {disb_v:,.0f} = USD {loss:,.0f}\n"
+            f"Expected value = (1 - {p:.4f}) x {gain:,.0f} - {p:.4f} x {loss:,.0f} = USD {ev:,.0f}",
+            language=None,
+        )
 
-    @st.fragment
-    def what_if(base: dict, rid: str, p_base: float) -> None:
-        """Rescore this applicant as three terms change; only this panel reruns."""
-        with st.container(key="whatif"):
-            U.html(f'<div class="cl-section-title" style="margin-top:0">{U.icon("sliders", 22)}<span>What if</span></div>'
-                   '<div class="cl-page-intro" style="font-size:0.9rem;margin-bottom:8px">Change the structure of this '
-                   "loan and see the score update. The form above is not changed.</div>")
-            gr0 = float(base["GrAppv"])
-            portion0 = float(np.clip(base["SBA_Appv"] / gr0, 0.05, 1.0))
-            dmax = float(min(rng("DisbursementGross", "max", 1.2e7), max(4 * base["DisbursementGross"], 500_000)))
-            s1, s2, s3 = st.columns(3)
-            w_term = s1.slider("Term (months)", 1, 480, int(base["Term"]), key=f"wi_term_{rid}")
-            w_share = s2.slider("Guaranteed share", 0.05, 1.0, round(portion0, 2), 0.01, key=f"wi_share_{rid}")
-            w_disb = s3.slider("Amount disbursed (USD)", 5_000, int(dmax), int(round(base["DisbursementGross"], -3)),
-                               5_000, key=f"wi_disb_{rid}")
-            grid = sorted(set(list(range(12, 481, 12)) + [w_term]))
-            rows = pd.DataFrame([{**base, "Term": m, "SBA_Appv": w_share * gr0, "DisbursementGross": float(w_disb)}
-                                 for m in grid])
-            feats_w, p_grid = score_rows(rows)
-            i = grid.index(w_term)
-            p_new = float(p_grid[i])
-            dec_new = str(U.decisions([p_new], t, d)[0])
-            ev_new, el_new = U.expected_value([p_new], [float(w_disb)], [w_share])
-            change = (p_new - p_base) * 100
-            k1, k2 = st.columns([1, 1.6], gap="large")
-            with k1:
-                U.tiles([
-                    {"label": "PD in this scenario", "value": f"{p_new:.1%}",
-                     "sub": f"<span class='{'cl-delta-down' if change > 0 else 'cl-delta-up'}'>{change:+.1f} pts</span> "
-                            "against the scored loan", "accent": U.band_for(p_new)["colour"]},
-                    {"label": "Expected net value", "value": U.fmt_usd(float(ev_new[0])),
-                     "sub": f"Expected loss {U.fmt_usd(float(el_new[0]))}", "accent": U.COLOURS["navy"]},
-                ], cols=1)
-                U.html(f"<div style='margin:4px 0 8px'>{U.decision_chip(dec_new)}</div>")
-            with k2:
-                fig = go.Figure()
-                for b in U.risk_bands():
-                    fig.add_hrect(y0=b["min"] * 100, y1=min(b["max"], 1) * 100, fillcolor=b["colour"], opacity=0.09,
-                                  line_width=0, layer="below")
-                fig.add_trace(go.Scatter(x=grid, y=np.asarray(p_grid) * 100, mode="lines+markers", name="PD by term",
-                                         line=dict(color=U.COLOURS["navy"], width=3), marker=dict(size=5, color=U.COLOURS["navy"]),
-                                         hovertemplate="%{x} months<br>PD %{y:.1f}%<extra></extra>"))
-                fig.add_trace(go.Scatter(x=[w_term], y=[p_new * 100], mode="markers", name="This scenario",
-                                         marker=dict(size=13, color=U.DECISION_COLOURS[dec_new],
-                                                     line=dict(color="#FFFFFF", width=2.5))))
-                fig.add_hline(y=t * 100, line_color=U.INK, line_dash="dot", line_width=1.5,
-                              annotation_text=f"threshold {t:.1%}", annotation_position="top left",
-                              annotation_font=dict(size=11, color=U.INK))
-                fig.update_layout(title="PD against term for this applicant", showlegend=False,
-                                  xaxis=dict(title="Term (months)", range=[0, 486]),
-                                  yaxis=dict(title="PD (%)", range=[0, 100]), margin=dict(l=8, r=8, t=40, b=40))
-                U.chart(fig, height=300, key="whatif_curve")
-                st.caption("Each point is a whole-year term with the other inputs held at the values above.")
 
-    what_if(result["row"], result["id"], p)
+@st.dialog("Share link")
+def share_sheet(res: dict) -> None:
+    case = A.encode_case(res["row"])
+    host = st.context.headers.get("host", "") if hasattr(st, "context") else ""
+    scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
+    link = f"{scheme}://{host}/score?case={case}" if host else f"/score?case={case}"
+    U.html(ui.note("The link holds the form values only; opening it scores the application again.", "accent"))
+    st.code(link, language=None)
+
+
+sheet = st.session_state.pop("score_sheet", None)
+if sheet is None and result and whatif_moved():
+    sheet = "whatif"  # a what-if slider moved in a full rerun: keep its sheet open
+if sheet == "whatif" and result:
+    whatif_sheet(result)
+elif sheet == "share" and result:
+    share_sheet(result)
+else:
+    st.session_state.pop("_wi_snap", None)

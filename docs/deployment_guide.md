@@ -11,7 +11,7 @@ The app reads everything it needs from the repository, so the following must be 
 
 | File or folder | Why the app needs it |
 |---|---|
-| `app/streamlit_app.py`, `app/pages/` (13 pages), `app/utils.py`, `app/analytics.py`, `app/experience.py` | The app itself: shared loading and scoring (`utils.py`), the pure computations behind the interactive pages (`analytics.py`: shareable case links, similar loans, objective thresholds, Monte Carlo, stress test, game logic) and the presentation layer (`experience.py`: dark mode, hero animation, auto-play strip, guided tour) |
+| `app/streamlit_app.py`, `app/pages/` (13 pages), `app/utils.py`, `app/analytics.py`, `app/ui.py`, `app/experience.py`, `app/assets/` | The app itself: shared loading and scoring (`utils.py`), the pure computations behind the interactive pages (`analytics.py`: shareable case links, similar loans, objective thresholds, Monte Carlo, stress test, game logic) and the presentation layer (`experience.py`: dark mode, hero animation, auto-play strip, guided tour) |
 | `app/assets/` | Theme (`theme.css`, `theme_dark.css`), logos, cleaning parameters, CSV templates, the 50-loan sample files and `test_sample_scored.csv` (20,000 held-out loans used by the portfolio, stress test, Monte Carlo, game and model pages, because `data/processed/` is not in the repository) |
 | `app/assets/aggregates/` | Small summaries of the full data for the Market explorer, Bank league and Score a loan pages (section 6) |
 | `src/` | Cleaning and feature functions shared with the notebooks |
@@ -48,18 +48,17 @@ Streamlit Cloud runs the app from the repository root, so `app/streamlit_app.py`
 
 | Check | Expected result |
 |---|---|
-| Home page opens | The full-width hero shows the animated loan flow, glass metric tiles that count up, the Watch it score strip cycling through three applicants, and the cost matrix below; no "interim development model" notice (that notice means the app did not find `models/final_model.joblib`) |
-| Navigation | The sidebar groups the pages under Decide, Portfolio, Explore and Model; the Dark mode toggle switches the colours and the charts and is kept when moving between pages |
-| Tour | Take the tour on Home walks through five pages with Next and Back and ends on Score a loan with the borderline example scored |
+| Overview opens | The glass page bar shows the model, the held-out loan count and the approve-below pill; the title block, the figure strip, the chart, the decision policy panel and the three example applications appear; no "interim development model" notice (that notice means the app did not find `models/final_model.joblib`) |
+| Navigation | The sidebar groups the pages under Decide, Portfolio, Explore and Model; the active page is the emerald pill |
 | Sidebar status card | Says "Model in service" and shows the final model name, training date and thresholds from `model_metadata.json` |
-| Score a loan | The borderline example is scored on arrival: scoring sequence, probability, gauge, risk band, decision, expected value, SHAP chart, applicant radar, the ten similar loans and the what-if panel appear, the caption reports a scoring time under 3 seconds, both memos download and Share this case gives a link that reopens the case |
-| Compare applicants | Three applicants appear side by side; editing a cell rescores the table and the charts; Copy copies one applicant into another |
-| Beat the model | Approve or Decline turns the card over; after five loans the summary compares your accuracy and value with the model's, and Play again draws five new loans |
+| Score a loan | The borderline example is scored on arrival: the result panel shows the probability, decision and band badges and the three values; the drivers card lists the top inputs and reports a scoring time under 3 seconds; the what-if sheet opens; both memos download and Share link gives a link that reopens the case |
+| Compare applicants | Three applicants appear side by side with the best one tinted; Edit the inputs shows the table and editing a cell rescores it; Copy copies one applicant into another |
+| Decision exercise | Approve or Decline reveals the model's probability and the recorded outcome; after five loans the panel shows the round summary, and New round draws five new loans |
 | Validation | Enter a guaranteed amount above the approved amount: the app refuses to score and explains why |
-| Batch scoring | Switch on the 50-loan sample file: 50 rows pass validation; the summary, histogram, two donuts and the editable table appear; clicking a histogram bar filters the table; editing a term rescores that loan; the scored CSV and the portfolio memo download |
-| Portfolio and threshold | The data caption says the 20,000-loan sample is used; the objective chips and the slider update the tiles, the animated curve, the confusion matrix, the state map and the sector treemap (the map outline is fetched by the browser from the Plotly CDN); clicking a state filters the treemap |
+| Batch scoring | Switch on the 50-loan sample file: 50 rows pass validation; the figure strip, the histogram and the portfolio summary panel appear; clicking a histogram bar filters the table; Edit rows shows the table and editing a term rescores that loan; the scored CSV and the portfolio memo download |
+| Portfolio and threshold | The objective rows and the slider update the figures, the curve, the confusion matrix panel, the state map and the sector treemap (the map outline is fetched by the browser from the Plotly CDN); clicking a state filters the treemap |
 | Stress test, Monte Carlo | The sliders rescore the sample and update the tiles and charts within a second or two |
-| Market explorer, Bank league | Play animates the map; clicking a state or a sector filters the other charts and shows the Filtered chip row; clicking a bubble opens that bank's profile |
+| Market explorer, Bank league | Run animates the map; clicking a state or a bar filters the figures and the top states panel; clicking a lender bar selects that lender and shows its profile |
 | Model lab | ROC, precision-recall and calibration curves for both models; clicking the ROC curve moves the threshold |
 | Phone | Open the link on a phone: the sidebar is collapsed, tiles sit two to a row and the form and results stack |
 | Model insights and Model card | Tables and charts load without errors |

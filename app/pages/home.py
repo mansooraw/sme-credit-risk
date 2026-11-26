@@ -1,150 +1,248 @@
-"""Home: cinematic hero with the animated loan flow, headline results, how it works and why it matters."""
+"""Overview: the board. Four figures on the left choose what the middle picture shows; the right column
+holds the example applications (each opens a sheet), the cost assumptions and the data note."""
 
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 
 meta = U.load_metadata()
 t, d = U.threshold(), U.decline_threshold()
 c = U.cost_assumptions()
-
-# Headline results (from the metadata)
 metrics = meta.get("metrics_test", {}) or {}
 policy = U.model_policy_results(meta)
 approval = U.find_value(policy, ["approval_rate"])
 loss_red = U.find_value(meta.get("business_results", {}), ["loss_reduction_pct", "loss_reduction", "loss_reduction_percent"])
+n_test = meta.get("n_test")
+schema = U.load_schema()
+mix = X.decision_mix()
+model_key = U.model_version_key()
 
 
-def pct_value(v):
+def share(v):
+    """Metadata shares arrive either as fractions or as percentages."""
     if v is None:
         return None
     v = float(v)
-    return v * 100 if abs(v) <= 1.5 else v
-
-
-def tile(label, value, decimals, suffix, sub, accent, help_text):
-    if value is None:
-        return {"label": label, "value": "n/a", "sub": sub, "accent": accent, "help": help_text}
-    return {"label": label, "value": f"{value:,.{decimals}f}{suffix}", "sub": sub, "accent": accent, "help": help_text,
-            "count": {"to": round(value, decimals), "decimals": decimals, "suffix": suffix}}
+    return v / 100 if abs(v) > 1.5 else v
 
 
 roc = metrics.get("roc_auc")
-mix = X.decision_mix()
+recall = share(metrics.get("recall"))
+approval = share(approval)
+loss_red = share(loss_red)
 
-U.runtime()
-with st.container(key="hero"):
-    logo = U.LOGO_LIGHT_PATH.read_text(encoding="utf-8")
-    left, right = st.columns([1.3, 1], gap="large", vertical_alignment="center")
+ui.page("Overview", "A clear view of lending performance and decision policy.", eyebrow="Overview", heading="Credit risk, in focus.")
+
+
+# ---------------------------------------------------------------------------
+# Curves for the middle picture (computed once per model version)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def curves(key: str) -> dict:
+    from sklearn.metrics import roc_curve
+    portfolio, source = U.scored_portfolio(key)
+    p = portfolio["p"].to_numpy()
+    y = portfolio["Default"].to_numpy().astype(int)
+    disb = portfolio["DisbursementGross"].to_numpy()
+    portion = portfolio["Portion"].to_numpy()
+    fpr, tpr, thr = roc_curve(y, p)
+    keep = np.linspace(0, len(fpr) - 1, min(len(fpr), 400)).astype(int)
+    grid = np.round(np.arange(0.02, 0.99, 0.01), 2)
+    rows = []
+    for g in grid:
+        s = U.policy_summary(p, y, disb, portion, float(g))
+        rows.append({"threshold": g, "approval_rate": s["approval_rate"], "recall": s["recall"],
+                     "net_value": s["realised_net_value"], "loss_reduction": s["loss_reduction"],
+                     "default_rate_approved": s["realised_default_rate_approved"]})
+    at_t = U.policy_summary(p, y, disb, portion, float(t))
+    return {"roc": pd.DataFrame({"fpr": fpr[keep], "tpr": tpr[keep]}), "grid": pd.DataFrame(rows),
+            "at_t": {k: v for k, v in at_t.items() if k != "confusion"}, "source": source, "n": int(len(p))}
+
+
+C = curves(model_key)
+grid = C["grid"]
+
+
+def mark_threshold(fig, ymax=None):
+    fig.add_vline(x=t, line_color=ui.CHART["ink"], line_dash="dot", line_width=1.5)
+    fig.add_annotation(x=t, y=1.0, yref="paper", text=f"model threshold {t:.0%}", showarrow=False, xanchor="left",
+                       xshift=6, yshift=-6, font=dict(size=12, color=ui.CHART["muted"]))
+
+
+def picture_roc():
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=dict(color=ui.CHART["hairline"], width=1.5, dash="dash"),
+                             hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=C["roc"]["fpr"], y=C["roc"]["tpr"], mode="lines", name="Final model",
+                             line=dict(color=ui.CHART["accent"], width=2.5),
+                             hovertemplate="Repaid loans declined %{x:.1%}<br>Defaults caught %{y:.1%}<extra></extra>"))
+    a = C["at_t"]
+    fig.add_trace(go.Scatter(x=[_fpr_at_t()], y=[a["recall"]], mode="markers+text",
+                             marker=dict(size=11, color=ui.CHART["ink"], line=dict(color="#ffffff", width=2)),
+                             text=[f"threshold {t:.0%}"], textposition="bottom right", textfont=dict(size=12, color=ui.CHART["muted"]),
+                             hovertemplate=f"At the model threshold<br>Defaults caught {a['recall']:.1%}<extra></extra>", showlegend=False))
+    ui.chart_layout(fig, "Defaults caught against repaid loans declined")
+    fig.update_layout(xaxis=dict(title="Share of repaid loans declined", tickformat=".0%", range=[0, 1]),
+                      yaxis=dict(title="Share of defaults caught", tickformat=".0%", range=[0, 1.02]), showlegend=False)
+    return fig
+
+
+def _fpr_at_t() -> float:
+    portfolio, _ = U.scored_portfolio(model_key)
+    p = portfolio["p"].to_numpy()
+    y = portfolio["Default"].to_numpy().astype(int)
+    repaid = y == 0
+    return float(((p >= t) & repaid).sum() / max(repaid.sum(), 1))
+
+
+def picture_curve(ycol: str, title: str, ylabel: str, fmt: str, floor: float | None = None):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=grid["threshold"], y=grid[ycol], mode="lines", line=dict(color=ui.CHART["accent"], width=2.5),
+                             hovertemplate="Threshold %{x:.2f}<br>" + ylabel + " %{y:" + fmt + "}<extra></extra>", showlegend=False))
+    if floor is not None:
+        fig.add_hline(y=floor, line_color=ui.CHART["warning"], line_dash="dot", line_width=1.5,
+                      annotation_text=f"business minimum {floor:.0%}", annotation_position="bottom right",
+                      annotation_font=dict(size=12, color=ui.CHART["warning"]))
+    sel = grid.iloc[(grid["threshold"] - t).abs().argsort()[:1]]
+    fig.add_trace(go.Scatter(x=sel["threshold"], y=sel[ycol], mode="markers", marker=dict(size=11, color=ui.CHART["ink"], line=dict(color="#ffffff", width=2)),
+                             hoverinfo="skip", showlegend=False))
+    mark_threshold(fig)
+    ui.chart_layout(fig, title)
+    fig.update_layout(xaxis=dict(title="Approval threshold (probability of default)", range=[0, 1]),
+                      yaxis=dict(title=ylabel, tickformat=fmt))
+    return fig
+
+
+def picture_value():
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=grid["threshold"], y=grid["net_value"] / 1e6, mode="lines", name="Net value, USD m",
+                             line=dict(color=ui.CHART["accent"], width=2.5),
+                             hovertemplate="Threshold %{x:.2f}<br>Net value USD %{y:,.1f} m<extra></extra>"))
+    fig.add_trace(go.Scatter(x=grid["threshold"], y=grid["loss_reduction"] * 100, mode="lines", name="Charge-off loss avoided, %",
+                             yaxis="y2", line=dict(color=ui.CHART["accent_light"], width=2, dash="dot"),
+                             hovertemplate="Threshold %{x:.2f}<br>Loss avoided %{y:.0f}%<extra></extra>"))
+    mark_threshold(fig)
+    ui.chart_layout(fig, "Net value and loss avoided by threshold")
+    fig.update_layout(xaxis=dict(title="Approval threshold (probability of default)", range=[0, 1]),
+                      yaxis=dict(title="Realised net value (USD m)"),
+                      yaxis2=dict(title="Loss avoided (%)", overlaying="y", side="right", range=[0, 100], showgrid=False,
+                                  tickfont=dict(color=ui.CHART["muted"], size=12), title_font=dict(color=ui.CHART["muted"], size=12)),
+                      margin=dict(r=56))
+    return fig
+
+
+PICTURES = {
+    "roc": picture_roc,
+    "recall": lambda: picture_curve("recall", "Defaults caught by threshold", "Share of defaults caught", ".0%"),
+    "approval": lambda: picture_curve("approval_rate", "Approval rate by threshold", "Approval rate", ".0%", floor=c["MIN_APPROVAL_RATE"]),
+    "loss": picture_value,
+}
+
+# ---------------------------------------------------------------------------
+# The page: figure strip, picture left, policy and examples right, cost strip
+# ---------------------------------------------------------------------------
+
+chosen = st.session_state.get("home_pick", "roc")
+ui.kpis([
+    ("ROC-AUC", "n/a" if roc is None else f"{float(roc):.3f}", None),
+    ("Defaults caught", "n/a" if recall is None else f"{recall:.1%}", None),
+    ("Approval rate", "n/a" if approval is None else f"{approval:.1%}", None),
+    ("Loss avoided", "n/a" if loss_red is None else f"{loss_red:.1%}", None),
+])
+
+with st.container(key="two"):
+    left, right = st.columns([1.18, 1], gap="medium")
     with left:
-        U.html(
-            f'<div class="cl-hero-logo">{logo}</div>'
-            '<div class="cl-hero-eyebrow"><span class="pulse"></span>Decision support for guaranteed SME lending</div>'
-            '<div class="cl-hero-title">Default risk scoring for the <span>SME credit desk</span></div>'
-            '<div class="cl-hero-sub">CreditLens estimates the chance that a government-guaranteed SME loan is charged off, '
-            "recommends approve, refer or decline, and explains the score in plain language. "
-            "The credit officer keeps the final decision.</div>"
-        )
-        if U.artefact_source()["is_dev"]:
-            U.html('<div class="cl-devnote" style="margin-top:8px">Interim development model in use</div>')
-        b1, b2, b3 = st.columns(3)
-        if b1.button("Score a loan", type="primary", use_container_width=True, key="hero_score", icon=":material/speed:"):
-            U.switch_page("pages/score_loan.py")
-        if b2.button("Portfolio", use_container_width=True, key="hero_portfolio", icon=":material/tune:"):
-            U.switch_page("pages/portfolio_threshold.py")
-        if b3.button("Take the tour", use_container_width=True, key="hero_tour", icon=":material/explore:"):
-            X.start_tour()
-            st.rerun()
-        U.html(
-            '<div class="cl-hero-legend">'
-            f'<span><i style="background:{U.COLOURS["teal"]}"></i>Approved <b>{mix["approve"]:.1%}</b></span>'
-            f'<span><i style="background:{U.COLOURS["amber"]}"></i>Referred <b>{mix["refer"]:.1%}</b></span>'
-            f'<span><i style="background:{U.COLOURS["red"]}"></i>Declined <b>{mix["decline"]:.1%}</b></span></div>'
-        )
+        with st.container(key="picture_fixed"):
+            fig = PICTURES[chosen]()
+            U.chart(fig, height=344, key="home_picture")
+        with st.container(key="pick_buttons"):
+            c1, c2, c3, c4 = st.columns(4)
+            for col, key, label in zip((c1, c2, c3, c4), ("roc", "recall", "approval", "loss"),
+                                       ("ROC curve", "Defaults caught", "Approval rate", "Net value")):
+                if col.button(label, key=f"btn_figures_{key}", type="primary" if key == chosen else "secondary",
+                              use_container_width=True):
+                    st.session_state["home_pick"] = key
+                    st.rerun()
     with right:
-        U.html('<div class="cl-tile-label" style="color:#A9BDD4;margin-top:8px">Watch it score</div>'
-               + X.watch_strip(U.score_examples(U.model_version_key())))
-    U.tiles([
-        tile("ROC-AUC", float(roc) if roc is not None else None, 3, "", "Ranking quality on held-out loans",
-             U.COLOURS["navy"], "Area under the ROC curve on the test split: the chance that a randomly chosen "
-             "defaulted loan scores higher than a randomly chosen repaid one. From metadata metrics_test."),
-        tile("Recall on defaults", pct_value(metrics.get("recall")), 1, "%", "Defaults not approved at the threshold",
-             U.COLOURS["teal"], "Defaulted test loans with PD at or above the approval threshold, divided by all "
-             "defaulted test loans. From metadata metrics_test."),
-        tile("Approval rate", pct_value(approval), 1, "%", f"Business minimum {c['MIN_APPROVAL_RATE']:.0%}",
-             U.COLOURS["teal"], "Test loans with PD below the approval threshold, divided by all test loans. "
-             "From metadata business_results."),
-        tile("Charge-off loss avoided", pct_value(loss_red), 1, "%", "Compared with approving every loan",
-             U.COLOURS["amber"], "1 minus the charge-off loss of the approved loans divided by the charge-off loss "
-             "if every test loan were approved. From metadata business_results."),
-    ], glass=True)
-X.hero_canvas(mix)
-X.tour_card("home")
+        ui.card("Decision policy", None, ui.rows([
+            {"a": "Approved", "a_small": f"PD below {t:.0%}", "b": f"{mix['approve']:.1%}"},
+            {"a": "Referred", "a_small": f"PD {t:.0%} to {d:.0%}", "b": f"{mix['refer']:.1%}"},
+            {"a": "Declined", "a_small": f"PD {d:.0%} and above", "b": f"{mix['decline']:.1%}"},
+        ]) + ui.stack([("good", mix["approve"], f"{mix['approve']:.1%}"), ("warning", mix["refer"], f"{mix['refer']:.1%}"),
+                      ("bad", mix["decline"], f"{mix['decline']:.1%}")]), kind="panel")
+        try:
+            ex = U.score_examples(model_key)
+        except Exception:  # noqa: BLE001
+            ex = None
+        with st.container(key="sheet_rows"):
+            U.html(ui.card_html("Example applications", "Open one to see its score and what drives it.", ""))
+            if ex is None:
+                U.html(ui.empty("The example applications are not available: run notebook 05 to write the model files."))
+            else:
+                for key, r in ex.iterrows():
+                    dec = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}[r["decision"]]
+                    pressed = ui.row_button({"a": U.EXAMPLE_LABELS.get(key, key), "a_small": f"{ui.money(r['DisbursementGross'])} · {ui.months(r['Term'])}",
+                                             "badge": dec, "b_small": f"PD {r['p']:.1%}"}, key=f"ex_{key}")
+                    if pressed:
+                        st.session_state["home_sheet"] = key
 
-n_test = meta.get("n_test")
-if isinstance(n_test, int):
-    st.caption(f"Measured on {n_test:,} held-out test loans the model never saw in training. Source: model metadata. "
-               "The particles in the banner pass through a scoring gate in the same approve, refer and decline proportions.")
+n_train, rate = schema.get("n_training_loans"), schema.get("training_default_rate")
+ui.strip([
+    ui.strip_title("Cost assumptions"),
+    f'<span class="ui-eyebrow" style="margin:0">If repaid</span><span class="v">+{c["NET_INTEREST_MARGIN"]:.0%}</span><span class="l">of disbursed</span>',
+    f'<span class="ui-eyebrow" style="margin:0">If it defaults</span><span class="v">-{c["LOSS_GIVEN_DEFAULT"]:.0%}</span><span class="l">of unguaranteed</span>',
+    f'<span class="l">SBA 7(a) loans · 1962 to 2014' + (f" · trained on {n_train:,} loans" if n_train else "") + "</span>",
+])
 
-# How it works
-U.section_title("How it works", "spark")
-U.html(
-    '<div class="cl-steps">'
-    f'<div class="cl-step"><div class="cl-step-icon">{U.icon("file", 24)}</div><div class="cl-step-num">01</div>'
-    "<h4>Application</h4><p>The officer enters the loan as received: amount, guarantee, term, business profile and lender, "
-    "or uploads a file of applications.</p></div>"
-    f'<div class="cl-step"><div class="cl-step-icon">{U.icon("gauge", 24)}</div><div class="cl-step-num">02</div>'
-    "<h4>Score and explain</h4><p>The inputs are cleaned and engineered exactly as in training, scored by the model and "
-    "broken down into the factors that raise or lower the risk.</p></div>"
-    f'<div class="cl-step"><div class="cl-step-icon">{U.icon("check", 24)}</div><div class="cl-step-num">03</div>'
-    "<h4>Decide</h4><p>CreditLens recommends approve, refer or decline and prices the decision in USD with the bank's cost "
-    "assumptions. The officer decides.</p></div></div>"
-)
 
-# Risk bands and decisions
-U.section_title("Reading a score", "gauge")
-bands = "".join(U.chip(f"{b['name']} <span class='cl-chip-mono'>{b['min']:.0%} to {b['max']:.0%}</span>", b["colour"])
-                for b in U.risk_bands())
-U.html(f"<div>{bands}</div>")
-st.caption("The probability of default (PD) is the estimated chance that the loan is charged off rather than repaid in full.")
-U.html(
-    '<div class="cl-decisions">'
-    f'<div class="cl-dcard"><span class="cl-dcard-bar" style="background:{U.DECISION_COLOURS["Approve"]}"></span>{U.chip("Approve", U.DECISION_COLOURS["Approve"], True)}'
-    f'<div class="rule">PD &lt; {t:.1%}</div><p>Below the threshold that maximises portfolio net value at an approval rate '
-    f'of at least {c["MIN_APPROVAL_RATE"]:.0%}.</p></div>'
-    f'<div class="cl-dcard"><span class="cl-dcard-bar" style="background:{U.DECISION_COLOURS["Refer"]}"></span>{U.chip("Refer", U.DECISION_COLOURS["Refer"], True)}'
-    f'<div class="rule">{t:.1%} to {d:.1%}</div><p>Sent to a credit officer for manual review with the explanation attached.</p></div>'
-    f'<div class="cl-dcard"><span class="cl-dcard-bar" style="background:{U.DECISION_COLOURS["Decline"]}"></span>{U.chip("Decline", U.DECISION_COLOURS["Decline"], True)}'
-    f'<div class="rule">PD &ge; {d:.1%}</div><p>The expected loss outweighs the margin; the applicant receives the main reasons.</p></div>'
-    "</div>"
-)
+# ---------------------------------------------------------------------------
+# The sheet: one example application, scored and explained
+# ---------------------------------------------------------------------------
 
-# Why it matters
-U.section_title("Why it matters", "scale")
-left, right = st.columns([1.1, 1], gap="large")
-with left:
-    U.html(
-        '<div class="cl-card"><h4>The cost matrix</h4>'
-        '<table class="cl-matrix"><tr><th>Decision</th><th>Loan repaid</th><th>Loan defaults</th></tr>'
-        f'<tr><td><b>Approve</b></td><td class="pos">+{c["NET_INTEREST_MARGIN"]:.0%} of disbursed (margin)</td>'
-        f'<td class="neg">-{c["LOSS_GIVEN_DEFAULT"]:.0%} of unguaranteed principal, -{c["WORKOUT_COST_RATE"]:.0%} of disbursed</td></tr>'
-        "<tr><td><b>Decline</b></td><td>0</td><td>0</td></tr></table>"
-        '<p style="margin-top:12px">Constants from src/config.py, the same values used to set the threshold.</p></div>'
-    )
-with right:
-    schema = U.load_schema()
-    n_train, rate = schema.get("n_training_loans"), schema.get("training_default_rate")
-    train_text = (f" The training split holds {n_train:,} loans with a default rate of {rate:.1%}." if n_train and rate else "")
-    U.html(
-        '<div class="cl-card"><h4>Data and setting</h4><p>Trained on US Small Business Administration 7(a) loan records '
-        "approved between 1962 and 2014 (Li, Mickel and Taylor, 2018; Kaggle, CC BY-SA 4.0)." + train_text +
-        " A guaranteed loan that defaults costs the bank the unguaranteed principal plus workout cost, while a wrongly "
-        "declined borrower costs the margin and the jobs the loan would have supported. The Emirates Development Bank "
-        "credit guarantee scheme works the same way, so a UAE bank would retrain the model on its own portfolio.</p></div>"
-    )
+@st.dialog("Application")
+def sheet(key: str) -> None:
+    ex = U.score_examples(model_key)
+    r = ex.loc[key]
+    raw = dict(U.EXAMPLES[key])
+    rows = pd.DataFrame([{**raw, "Recession": int(raw["Recession"])}], index=[key])
+    feats, p = U.score_form_rows(rows)
+    p = float(p[0])
+    decision = U.decisions(np.array([p]))[0]
+    dec = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}[decision]
+    gain, loss = U.value_components(np.array([raw["DisbursementGross"]]), np.array([feats["Portion"].iloc[0]]))
+    ev = (1 - p) * float(gain[0]) - p * float(loss[0])
+    U.html(ui.pair([("Probability of default", f"{p:.1%}", U.band_for(p)["name"]), ("Expected net value", ui.money(ev), "to the bank")]))
+    U.html(f'<div style="margin:8px 0 12px">{ui.badge(dec)}</div>')
+    try:
+        contrib, _ = U.local_contributions(U.load_model(), feats.iloc[[0]])
+        drivers = U.explanation_sentences(contrib, 3)
+    except Exception:  # noqa: BLE001
+        drivers = []
+    if drivers:
+        U.html(ui.eyebrow("What drives the score") + "".join(ui.note(s, "accent") for s in drivers))
+    facts = [("Sector", raw["Sector"]), ("State", U.state_name(raw["State"])), ("Disbursed", ui.money(raw["DisbursementGross"])),
+             ("Term", ui.months(raw["Term"])), ("Guaranteed", f"{feats['Portion'].iloc[0]:.0%}"), ("Employees", f"{raw['NoEmp']}"),
+             ("Business", "New" if raw["NewExist"] == "New" else "Existing"), ("Lender", str(raw["Bank"]).title())]
+    U.html(ui.eyebrow("Application") + ui.rows([{"a": k, "b": v} for k, v in facts]))
+    if st.button("Open in Score a loan", type="primary", use_container_width=True, key="sheet_open"):
+        st.session_state["example"] = key
+        st.session_state["auto_score"] = True
+        st.session_state.pop("home_sheet", None)
+        U.switch_page("pages/score_loan.py")
+
+
+if st.session_state.get("home_sheet"):
+    key = st.session_state.pop("home_sheet")
+    sheet(key)

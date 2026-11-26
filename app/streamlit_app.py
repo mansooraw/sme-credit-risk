@@ -26,30 +26,30 @@ st.set_page_config(
 )
 U.inject_theme()
 X.inject_mode()
-st.logo(str(U.LOGO_LIGHT_PATH), size="large", icon_image=str(U.ICON_PATH))
+st.logo(str(U.LOGO_PATH), size="large", icon_image=str(U.ICON_PATH))
 
 P = st.Page
 pages = {
     "Decide": [
-        P("pages/home.py", title="Home", icon=":material/space_dashboard:", default=True),
+        P("pages/home.py", title="Overview", icon=":material/dashboard:", default=True),
         P("pages/score_loan.py", title="Score a loan", icon=":material/speed:", url_path="score"),
         P("pages/compare.py", title="Compare applicants", icon=":material/compare_arrows:", url_path="compare"),
-        P("pages/beat_model.py", title="Beat the model", icon=":material/sports_esports:", url_path="game"),
+        P("pages/beat_model.py", title="Decision exercise", icon=":material/rule:", url_path="exercise"),
         P("pages/batch_scoring.py", title="Batch scoring", icon=":material/upload_file:", url_path="batch"),
     ],
     "Portfolio": [
         P("pages/portfolio_threshold.py", title="Portfolio and threshold", icon=":material/tune:", url_path="portfolio"),
-        P("pages/stress_test.py", title="Stress test", icon=":material/thunderstorm:", url_path="stress"),
-        P("pages/monte_carlo.py", title="Monte Carlo", icon=":material/casino:", url_path="montecarlo"),
+        P("pages/stress_test.py", title="Stress test", icon=":material/query_stats:", url_path="stress"),
+        P("pages/monte_carlo.py", title="Monte Carlo", icon=":material/functions:", url_path="montecarlo"),
     ],
     "Explore": [
-        P("pages/market_explorer.py", title="Market explorer", icon=":material/public:", url_path="market"),
+        P("pages/market_explorer.py", title="Market explorer", icon=":material/map:", url_path="market"),
         P("pages/bank_league.py", title="Bank league", icon=":material/account_balance:", url_path="banks"),
     ],
     "Model": [
         P("pages/model_lab.py", title="Model lab", icon=":material/science:", url_path="lab"),
         P("pages/model_insights.py", title="Model insights", icon=":material/insights:", url_path="insights"),
-        P("pages/model_card.py", title="Model card and about", icon=":material/description:", url_path="about"),
+        P("pages/model_card.py", title="Model card", icon=":material/description:", url_path="about"),
     ],
 }
 navigation = st.navigation(pages)

@@ -1,4 +1,11 @@
-"""Beat the model: decide on five real held-out loans, then see the model's call and what actually happened."""
+"""Decision exercise: decide five real held-out loans, then compare with the model and the recorded outcome.
+
+Composition (from design-system/concepts/decision_exercise.webp): the title block, a pill strip with the
+01 to 05 stepper and the three running figures, then two columns. Left: the application card (sector and
+state, requested amount, the fact grid, Approve and Decline, and after a choice what happened). Right: the
+dark emerald panel (which application this is, then the running tally per loan, and the round summary at
+the end). Along the bottom: the method sheet row and the data note.
+"""
 
 import sys
 import time
@@ -6,32 +13,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import numpy as np  # noqa: E402
+import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import analytics as A  # noqa: E402
-import experience as X  # noqa: E402
+import ui  # noqa: E402
 import utils as U  # noqa: E402
 
-X.page_start("game")
-U.page_header(
-    "Beat the model",
-    f"Five real loans from the held-out test set, one at a time. You see what the credit desk saw at application; "
-    f"approve or decline, then the card turns over to show the model's estimate and whether the loan was repaid. "
-    f"Each round holds {A.GAME_DEFAULTS} loans that were charged off.",
-    eyebrow="Game",
-)
+ui.page("Decision exercise", "Decide five held-out loans, then compare with the model and recorded outcome.",
+        eyebrow="Decision exercise", heading="Your judgment. Then the evidence.")
 
 sample = U.sample_portfolio(U.model_version_key())
 t = U.threshold()
 gain_all, loss_all = U.value_components(sample["DisbursementGross"], sample["Portion"])
 sample = sample.assign(gain=gain_all, loss=loss_all)
+PAST = {"Approve": "Approved", "Refer": "Referred", "Decline": "Declined"}
 
 
 def new_game(seed: int | None = None) -> None:
     seed = int(time.time() * 1000) % 2_000_000_000 if seed is None else seed
     loans = A.draw_game_loans(sample, seed=seed)
     st.session_state["game"] = {"seed": seed, "ids": list(loans.index), "i": 0, "choices": [], "revealed": False}
+    st.session_state.pop("game_pick", None)
 
 
 if "game" not in st.session_state or any(i not in sample.index for i in st.session_state["game"]["ids"]):
@@ -41,114 +44,198 @@ loans = sample.loc[game["ids"]]
 model_approves = (loans["p"] < t).to_numpy()
 n = len(loans)
 done = len(game["choices"])
+over = game["i"] >= n
+awaiting = not over and not game["revealed"]
 
-# Running score
-user_right = sum(int(c == (y == 0)) for c, y in zip(game["choices"], loans["Default"].iloc[:done]))
-model_right = sum(int(m == (y == 0)) for m, y in zip(model_approves[:done], loans["Default"].iloc[:done]))
-steps = "".join(f'<i class="{"done" if k < done else ("now" if k == game["i"] and k >= done else "")}"></i>' for k in range(n))
-U.html(f'<div class="cl-scoreboard"><div class="side"><span>You</span><b>{user_right}</b></div>'
-       f'<div class="mid">Loan {min(game["i"] + 1, n)} of {n}<div class="cl-progress">{steps}</div></div>'
-       f'<div class="side right"><span>Model</span><b>{model_right}</b></div></div>')
+ys = loans["Default"].to_numpy()
+officer_each = [A.game_outcome(c, ys[k], loans["gain"].iloc[k], loans["loss"].iloc[k]) for k, c in enumerate(game["choices"])]
+model_each = [A.game_outcome(bool(model_approves[k]), ys[k], loans["gain"].iloc[k], loans["loss"].iloc[k]) for k in range(done)]
+officer_value, model_value = sum(officer_each), sum(model_each)
+agreed = [bool(game["choices"][k]) == bool(model_approves[k]) for k in range(done)]
 
 
-def facts(r) -> str:
-    items = [
-        ("Sector", r["Sector"]), ("State", U.state_name(r["State"])),
-        ("Business", "New (2 years or less)" if r["NewExist"] == "New" else "Existing"),
-        ("Employees", f"{int(r['NoEmp']):,}"), ("Jobs created or kept", f"{int(r['CreateJob'] + r['RetainedJob']):,}"),
-        ("Amount", U.fmt_usd(float(r["DisbursementGross"]))), ("Term", f"{r['TermYears'] * 12:.0f} months"),
-        ("Guaranteed", f"{r['Portion']:.0%}"), ("Lender", str(r["Bank"]).title()[:34]),
+def model_word(k: int) -> str:
+    return PAST[str(U.decisions([loans["p"].iloc[k]], t)[0])]
+
+
+def officer_word(k: int) -> str:
+    return "Approved" if game["choices"][k] else "Declined"
+
+
+def outcome_word(k: int) -> str:
+    return "Charged off" if int(ys[k]) else "Repaid"
+
+
+def decide(approve: bool) -> None:
+    game["choices"].append(approve)
+    game["revealed"] = True
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Parts
+# ---------------------------------------------------------------------------
+
+def application_facts(r) -> list[tuple[str, str]]:
+    return [
+        ("Term", ui.months(round(r["TermYears"] * 12))),
+        ("Guaranteed", f"{r['Portion']:.0%}"),
+        ("Employees", f"{int(r['NoEmp']):,}"),
+        ("Jobs created or kept", f"{int(r['CreateJob'] + r['RetainedJob']):,}"),
+        ("Lender", str(r["Bank"]).title()[:30].strip()),
         ("Lender in same state", "Yes" if r["SameStateBank"] == 1 else "No"),
-        ("Revolving line", {"Y": "Yes", "N": "No", "T": "Code T"}.get(r["RevLineCr"], r["RevLineCr"])),
+        ("Revolving line", {"Y": "Yes", "N": "No", "T": "Code T"}.get(r["RevLineCr"], str(r["RevLineCr"]))),
         ("Ran through 2007 to 2009", "Yes" if r["Recession"] == 1 else "No"),
     ]
-    return '<div class="cl-facts">' + "".join(f"<div><span>{k}</span><b>{v}</b></div>" for k, v in items) + "</div>"
 
 
-if game["i"] < n:
-    i = game["i"]
+def application_card(i: int) -> None:
+    """The glass application card: header, facts, the decision buttons or what happened."""
     r = loans.iloc[i]
-    revealed = game["revealed"]
-    head = (f'<div class="cl-game-head"><h4>{U.icon("briefcase", 20)} Application {i + 1}</h4>'
-            f'{U.chip(r["Sector"][:28], U.COLOURS["navy"])}</div>')
-    body = facts(r)
-    if revealed:
-        choice = game["choices"][i]
-        m_app = bool(model_approves[i])
-        y = int(r["Default"])
-        model_dec = str(U.decisions([r["p"]], t)[0])
-        you_right = choice == (y == 0)
-        model_right_now = m_app == (y == 0)
-        value = A.game_outcome(choice, y, r["gain"], r["loss"])
-        outcome = (f'<b style="color:{U.COLOURS["red"]}">Charged off</b>' if y else
-                   f'<b style="color:{U.COLOURS["teal"]}">Repaid in full</b>')
-        body += (
-            '<div class="cl-reveal-row">'
-            f'<div><span>Model PD</span><b>{r["p"]:.1%}</b><div style="margin-top:6px">{U.chip(model_dec, U.DECISION_COLOURS[model_dec], True)}</div></div>'
-            f'<div><span>You chose</span><b>{"Approve" if choice else "Decline"}</b>'
-            f'<div class="cl-muted" style="font-size:0.82rem;margin-top:4px">Value to the bank {U.fmt_usd(value)}</div></div>'
-            f'<div><span>What happened</span>{outcome}</div></div>'
-        )
-        if you_right and not model_right_now:
-            verdict = ("win", "You beat the model on this one.")
-        elif you_right:
-            verdict = ("win", "Right call, and the model agreed.")
-        elif model_right_now:
-            verdict = ("lose", "The model got this one and you did not.")
-        else:
-            verdict = ("lose", "Neither of you got this one.")
-        body += f'<div class="cl-verdict {verdict[0]}">{verdict[1]}</div>'
-    cls = "flip" if revealed else "deal"
-    U.html(f'<div class="cl-game-card {cls}" data-k="{game["seed"]}-{i}-{int(revealed)}"><div class="cl-game-inner">{head}{body}</div></div>')
-
-    with st.container(key="game_buttons"):
-        if not revealed:
+    business = "New business · 2 years or less" if r["NewExist"] == "New" else "Existing business · more than 2 years"
+    with st.container(key="game_controls"):
+        head, amount = st.columns([1.6, 1], gap="small")
+        with head:
+            U.html(ui.card_html(f"{r['Sector']} / {U.state_name(r['State'])}", business, ""))
+        with amount:
+            U.html(ui.pair([("Requested amount", f"USD {ui.num(float(r['DisbursementGross']))}", None)]))
+        U.html(ui.facts(application_facts(r), columns=4))
+        if awaiting:
             b1, b2 = st.columns(2)
-            if b1.button("Approve", type="primary", use_container_width=True, key="game_approve", icon=":material/check_circle:"):
-                game["choices"].append(True)
-                game["revealed"] = True
-                st.rerun()
-            if b2.button("Decline", use_container_width=True, key="game_decline", icon=":material/block:"):
-                game["choices"].append(False)
-                game["revealed"] = True
-                st.rerun()
+            if b1.button("Approve", type="primary", use_container_width=True, key="game_approve"):
+                decide(True)
+            if b2.button("Decline", use_container_width=True, key="game_decline"):
+                decide(False)
+            U.html(ui.note("Model decision and recorded outcome appear after your choice.", "accent"))
         else:
-            last = i == n - 1
-            if st.button("See the result" if last else "Next loan", type="primary", use_container_width=True,
-                         key="game_next", icon=":material/arrow_forward:"):
+            U.html(ui.eyebrow("What happened") + ui.rows([
+                {"a": "Model PD", "a_small": f"Model approves below {t:.0%}", "b": ui.pct(loans["p"].iloc[i])},
+                {"a": "Model decision", "badge": model_word(i)},
+                {"a": "Officer decision", "badge": officer_word(i)},
+                {"a": "Outcome", "badge": outcome_word(i)},
+                {"a": "Value to the bank", "b": ui.money(officer_each[i]), "b_small": "Your decision"},
+            ]))
+            if st.button("Summary" if i == n - 1 else "Next loan", type="primary", use_container_width=True, key="game_next"):
                 game["i"] += 1
                 game["revealed"] = False
                 st.rerun()
-else:
-    s = A.game_summary(game["choices"], model_approves, loans["Default"], loans["gain"], loans["loss"])
-    won = s["user_value"] > s["model_value"] or (s["user_value"] == s["model_value"] and s["user_correct"] > s["model_correct"])
-    title = "You beat the model" if won else ("A draw" if s["user_value"] == s["model_value"] else "The model wins this round")
-    seed_chip = U.chip("Round " + str(game["seed"]), U.COLOURS["grey"])
-    U.html(f'<div class="cl-game-card flip"><div class="cl-game-inner"><div class="cl-game-head"><h4>{U.icon("check", 20)} {title}</h4>'
-           f'{seed_chip}</div>'
-           '<p class="cl-muted" style="margin:0 0 6px">Value counts the margin on approved loans that were repaid and the '
-           'loss on approved loans that defaulted, with the cost matrix of the model.</p></div></div>')
-    U.tiles([
-        {"label": "Your accuracy", "value": f"{s['user_accuracy']:.0%}", "sub": f"{s['user_correct']} of {s['n']} right",
-         "accent": U.COLOURS["teal"], "help": "A decision is right when an approved loan was repaid or a declined loan was charged off."},
-        {"label": "Model accuracy", "value": f"{s['model_accuracy']:.0%}", "sub": f"{s['model_correct']} of {s['n']} right",
-         "accent": U.COLOURS["navy"], "help": f"The model approves when the PD is below {t:.1%}; refer and decline count as not approved."},
-        {"label": "Your value to the bank", "value": U.fmt_usd(s["user_value"]),
-         "sub": f"Model {U.fmt_usd(s['model_value'])}", "accent": U.COLOURS["teal"] if s["user_value"] >= s["model_value"] else U.COLOURS["red"],
-         "help": "Sum over the loans you approved: margin if repaid, minus the unguaranteed loss and workout cost if charged off."},
-        {"label": "Best possible", "value": U.fmt_usd(s["best_value"]), "sub": f"Approve all {U.fmt_usd(s['approve_all_value'])}",
-         "accent": U.COLOURS["amber"], "help": "Approving exactly the loans that were repaid, against approving all five."},
-    ])
-    diff = s["user_value"] - s["model_value"]
-    U.html(f'<div class="cl-insight">{U.icon("coins", 18)}<span>'
-           + (f"Your decisions were worth {U.fmt_usd(diff)} more than the model's on these five loans."
-              if diff > 0 else f"The model's decisions were worth {U.fmt_usd(-diff)} more than yours on these five loans."
-              if diff < 0 else "You and the model made decisions of the same value on these five loans.")
-           + "</span></div>")
-    if st.button("Play again with five new loans", type="primary", use_container_width=True, key="game_again",
-                 icon=":material/replay:"):
-        new_game(game["seed"] + 1)
-        st.rerun()
 
-st.caption("Loans are drawn from the committed 20,000-loan sample of the held-out test split and scored with the "
-           f"loaded model; the model approves below its threshold of {t:.1%}.")
+
+def round_card() -> None:
+    """At the end of the round the left card lists the five loans, officer against model."""
+    items = []
+    for k in range(n):
+        r = loans.iloc[k]
+        items.append({"a": f"Loan {k + 1}: {str(r['Sector'])[:24].strip()}",
+                      "a_small": f"Officer {officer_word(k).lower()}, model {model_word(k).lower()}",
+                      "badge": outcome_word(k), "b_small": "Agreed" if agreed[k] else "Differed"})
+    ui.card("Officer and model by loan", f"You and the model agreed on {sum(agreed)} of {n} loans.", ui.rows(items))
+
+
+def tally_chart() -> None:
+    """Officer against model value per loan, drawn small on the dark panel."""
+    names = [f"Loan {k + 1}" for k in range(n)]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=names, y=officer_each + [None] * (n - done), name="Officer", marker_color="#ffffff",
+                         hovertemplate="%{x}<br>Officer value USD %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Bar(x=names, y=model_each + [None] * (n - done), name="Model", marker_color=ui.CHART["accent_light"],
+                         hovertemplate="%{x}<br>Model value USD %{y:,.0f}<extra></extra>"))
+    ui.chart_layout(fig)
+    fig.add_hline(y=0, line_color="#ffffff", line_width=1)
+    fig.update_layout(
+        barmode="group", bargap=0.35, height=230, margin=dict(l=8, r=8, t=30, b=8),
+        font=dict(color="#ffffff"), legend=dict(font=dict(color="#ffffff"), y=1.12),
+        xaxis=dict(categoryorder="array", categoryarray=names, showgrid=False, linecolor=ui.CHART["accent_light"],
+                   tickfont=dict(color="#ffffff")),
+        yaxis=dict(tickformat="~s", showgrid=False, zeroline=False, tickfont=dict(color="#ffffff"), title=""),
+    )
+    # drawn straight with Plotly: the house chart helper resets the text to ink, which is unreadable on the panel
+    st.plotly_chart(fig, use_container_width=True, theme=None, key="game_tally",
+                    config={"displayModeBar": False, "responsive": True})
+
+
+def measures_rows() -> str:
+    return ui.rows([
+        {"a": "Your accuracy", "a_small": "Approved loans repaid, declined loans charged off"},
+        {"a": "Model accuracy", "a_small": f"The model approves below {t:.0%}"},
+        {"a": "Net value to the bank", "a_small": "Margin if repaid, loss and workout cost if charged off"},
+    ])
+
+
+# ---------------------------------------------------------------------------
+# The page
+# ---------------------------------------------------------------------------
+
+ui.strip([
+    ui.steps(n, done, None if over else game["i"] + 1),
+    ui.strip_value("Decided", f"{done} of {n}"),
+    ui.strip_value("Officer net value", ui.money(officer_value)),
+    ui.strip_value("Model net value", ui.money(model_value)),
+])
+
+with st.container(key="two"):
+    left, right = st.columns([1.1, 1], gap="medium")
+
+    with left:
+        if over:
+            round_card()
+        else:
+            application_card(game["i"])
+
+    with right:
+        with st.container(key="game_panel"):
+            if over:
+                s = A.game_summary(game["choices"], model_approves, loans["Default"], loans["gain"], loans["loss"])
+                U.html(ui.card_html("Round summary", "Your accuracy against the model on this round.", ui.rows([
+                    {"a": "Officer accuracy", "b": ui.pct(s["user_accuracy"], 0), "b_small": f"{s['user_correct']} of {s['n']}"},
+                    {"a": "Model accuracy", "b": ui.pct(s["model_accuracy"], 0), "b_small": f"{s['model_correct']} of {s['n']}"},
+                    {"a": "Net value", "a_small": f"Model {ui.money(s['model_value'])}", "b": ui.money(s["user_value"]),
+                     "b_small": "Officer"},
+                    {"a": "Approve all", "a_small": f"Best possible {ui.money(s['best_value'])}",
+                     "b": ui.money(s["approve_all_value"])},
+                ]), kind="panel"))
+                tally_chart()
+                if st.button("New round", use_container_width=True, key="game_again"):
+                    new_game(game["seed"] + 1)
+                    st.rerun()
+            else:
+                i = game["i"]
+                line = "Review the facts before deciding." if awaiting else "See what happened, then go to the next loan."
+                body = (ui.eyebrow("Value to the bank per loan") if done else
+                        ui.eyebrow("What the exercise measures") + measures_rows())
+                U.html(ui.card_html(f"Application {i + 1} of {n}", line, body, kind="panel"))
+                if done:
+                    tally_chart()
+
+with st.container(key="game_foot"):
+    f1, f2 = st.columns([1.1, 1], gap="medium")
+    with f1:
+        with st.container(key="sheet_rows"):
+            if ui.row_button({"a": "Method and data", "a_small": "Loans, values and accuracy"}, key="game_method"):
+                st.session_state["game_sheet"] = "method"
+    with f2:
+        ui.strip([f'<span class="l">{A.GAME_DEFAULTS} of the {n} loans were charged off</span>'])
+
+
+# ---------------------------------------------------------------------------
+# The sheet: method and data
+# ---------------------------------------------------------------------------
+
+@st.dialog("Method and data")
+def method_sheet() -> None:
+    for text in [
+        f"Loans are drawn from the committed 20,000-loan sample of the held-out test split; each round holds "
+        f"{A.GAME_DEFAULTS} loans that were charged off.",
+        "The facts shown are those available when the loan was made.",
+        f"The model approves when its probability of default is below {t:.1%}; refer and decline count as not approved.",
+        "A decision is correct when an approved loan was repaid or a declined loan was charged off.",
+        "Net value counts the margin on approved loans that were repaid and the unguaranteed loss plus workout cost "
+        "on approved loans that were charged off, using the cost matrix of the model.",
+    ]:
+        U.html(ui.note(text, "accent"))
+    U.html(ui.rows([{"a": "Round", "b": f"{game['seed']}"}]))
+
+
+if st.session_state.get("game_sheet"):
+    st.session_state.pop("game_sheet")
+    method_sheet()

@@ -1,0 +1,42 @@
+/* CreditLens tokens: every colour, size and duration. Pages never write these values; the kit reads them.
+   Source: design-system/MASTER.md and the concept images in design-system/concepts. */
+:root {
+  /* colour */
+  --ink: #10302b; --text-2: #4f6366; --muted: #6b7c7e;
+  --accent: #0f8b6c; --accent-deep: #0a5f4b; --accent-soft: #ddf6ee; --accent-light: #7fcdb6;
+  --panel-a: #0e7a5f; --panel-b: #0a4f3f; --panel-text: #ffffff;
+  --hairline: rgba(16, 48, 43, 0.10); --hairline-strong: rgba(16, 48, 43, 0.18);
+  --canvas: #eef3f3; --glass: rgba(255, 255, 255, 0.66); --glass-strong: rgba(255, 255, 255, 0.82); --glass-edge: rgba(255, 255, 255, 0.85);
+  --card: #ffffff;
+  --good: #0e6b52; --good-bg: #ddf6ee; --warning: #8a5a00; --warning-bg: #fbebc8; --bad: #b23a2e; --bad-bg: #fbdad5; --neutral-bg: #e6ecef;
+  --series-2: #2563eb; --series-3: #9aa8ad;
+  /* spacing */
+  --s1: 8px; --s2: 12px; --s3: 16px; --s4: 24px; --s5: 32px; --s6: 48px;
+  --gutter-x: 28px; --gutter-y: 16px; --card-pad: 16px 22px;
+  /* radii, shadows, glass */
+  --r-control: 12px; --r-card: 22px; --r-pill: 999px;
+  --shadow-rest: 0 1px 2px rgba(16, 48, 43, 0.04), 0 10px 30px rgba(16, 72, 60, 0.08);
+  --shadow-hover: 0 2px 4px rgba(16, 48, 43, 0.06), 0 16px 40px rgba(16, 72, 60, 0.14);
+  --shadow-panel: 0 14px 40px rgba(10, 79, 63, 0.28);
+  --blur: 18px;
+  /* type */
+  --font: 'Inter', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --t-eyebrow: 12px; --t-label: 13px; --t-body: 15px; --t-title: 20px; --t-figure: 34px; --t-figure-sm: 28px; --t-display: 44px; --t-sub: 18px;
+  --t-row: 14px; --t-meta: 12px;
+  /* motion */
+  --ease: cubic-bezier(.2, .7, .2, 1); --d-hover: 180ms; --d-surface: 260ms; --d-arrive: 320ms; --stagger: 70ms; --d-count: 900ms;
+  /* sizes */
+  --figure-card-h: 88px; --row-h: 40px; --input-h: 36px; --touch-h: 44px; --sidebar-w: 250px;
+  /* compatibility aliases for older parts */
+  --cl-bg: var(--canvas); --cl-card: var(--glass); --cl-border: var(--hairline); --cl-border-strong: var(--hairline-strong);
+  --cl-ink: var(--ink); --cl-muted: var(--text-2); --cl-faint: var(--muted);
+  --cl-accent: var(--accent); --cl-accent-soft: var(--accent-soft);
+  --cl-good: var(--good); --cl-warn: var(--warning); --cl-bad: var(--bad);
+  --cl-good-soft: var(--good-bg); --cl-warn-soft: var(--warning-bg); --cl-bad-soft: var(--bad-bg);
+  --cl-side: var(--panel-b); --cl-side-ink: var(--ink);
+  --cl-radius: var(--r-control); --cl-font: var(--font); --cl-mono: var(--font); --cl-gutter: var(--gutter-x);
+  --cl-teal: var(--good); --cl-amber: var(--warning); --cl-coral: var(--bad);
+  --cl-teal-soft: var(--good-bg); --cl-amber-soft: var(--warning-bg); --cl-coral-soft: var(--bad-bg);
+  --cl-navy-900: var(--panel-b); --cl-navy-700: var(--accent); --cl-shadow: var(--shadow-rest);
+  --cl-s1: 8px; --cl-s2: 12px; --cl-s3: 16px; --cl-s4: 24px;
+}

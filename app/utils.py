@@ -77,13 +77,16 @@ for _code, _name in config.NAICS_SECTORS.items():
     SECTOR_TO_NAICS.setdefault(_name, int(_code) * 10_000)
 SECTOR_TO_NAICS[config.UNKNOWN_SECTOR] = 0
 
+# App palette: one accent, three semantic colours, two neutrals. The keys are
+# kept from the notebooks' palette so that pages and charts share one vocabulary.
 COLOURS = {
-    "navy": config.PALETTE["navy"],
-    "teal": config.PALETTE["teal"],
-    "amber": config.PALETTE["amber"],
-    "red": config.PALETTE["red"],
-    "grey": config.PALETTE["grey"],
-    "dark_red": "#9B2C2C",
+    "navy": "#1F4E8C",   # accent, primary series
+    "teal": "#1A7F5A",   # good: approve, repaid
+    "amber": "#B7791F",  # caution: refer
+    "red": "#C0392B",    # bad: decline, default
+    "grey": "#8B94A3",
+    "slate": "#4F5B6B",
+    "dark_red": "#8E2A1F",
 }
 DECISION_COLOURS = {"Approve": COLOURS["teal"], "Refer": COLOURS["amber"], "Decline": COLOURS["red"]}
 BAND_COLOURS = [COLOURS["teal"], COLOURS["amber"], COLOURS["red"], COLOURS["dark_red"]]
@@ -920,15 +923,15 @@ def fmt_metric(v, pct: bool = False) -> str:
 
 THEME_PATH = ASSETS_DIR / "theme.css"
 LOGO_LIGHT_PATH = ASSETS_DIR / "creditlens_logo_light.svg"
-FONT_STACK = "Plus Jakarta Sans, Helvetica Neue, Arial, sans-serif"
-MONO_STACK = "JetBrains Mono, Menlo, monospace"
+FONT_STACK = "Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+MONO_STACK = "ui-monospace, SF Mono, Menlo, Consolas, monospace"
 # Light and dark colour sets. INK, MUTED, BORDER, GRID and CARD are read
 # through the module __getattr__ below, so pages that use U.INK follow the
 # dark-mode toggle without any change.
-LIGHT = {"INK": "#0B1F3A", "MUTED": "#5B6B82", "BORDER": "#E3E8EF", "GRID": "#EEF2F7", "CARD": "#FFFFFF",
-         "BG": "#F7F9FC", "HOVER": "#0B1F3A", "HOVER_TEXT": "#FFFFFF"}
-DARK = {"INK": "#E6EDF6", "MUTED": "#9FB0C6", "BORDER": "#26405F", "GRID": "#1C3350", "CARD": "#10253F",
-        "BG": "#0A1628", "HOVER": "#E6EDF6", "HOVER_TEXT": "#0B1F3A"}
+LIGHT = {"INK": "#141A22", "MUTED": "#5C6675", "BORDER": "#E2E5EA", "GRID": "#EEF0F3", "CARD": "#FFFFFF",
+         "BG": "#F4F5F7", "HOVER": "#141A22", "HOVER_TEXT": "#FFFFFF"}
+DARK = {"INK": "#E6EAF0", "MUTED": "#9AA5B5", "BORDER": "#27303C", "GRID": "#222A35", "CARD": "#161C24",
+        "BG": "#0F1419", "HOVER": "#E6EAF0", "HOVER_TEXT": "#141A22"}
 
 
 def is_dark() -> bool:
@@ -983,14 +986,18 @@ def icon(name: str, size: int = 20, colour: str = "#2A9D8F", stroke: float = 1.9
             f'aria-hidden="true">{body}</svg>')
 
 
+TOKENS_PATH = ASSETS_DIR / "tokens.css"
+
+
 @st.cache_data(show_spinner=False)
 def _theme_css(mtime: float) -> str:
-    return THEME_PATH.read_text(encoding="utf-8")
+    tokens = TOKENS_PATH.read_text(encoding="utf-8") if TOKENS_PATH.exists() else ""
+    return tokens + "\n" + THEME_PATH.read_text(encoding="utf-8")
 
 
 def inject_theme() -> None:
-    """Inject app/assets/theme.css (read once and cached)."""
-    st.markdown(f"<style>{_theme_css(_mtime(THEME_PATH))}</style>", unsafe_allow_html=True)
+    """Inject app/assets/tokens.css and theme.css (read once and cached)."""
+    st.markdown(f"<style>{_theme_css(_mtime(THEME_PATH) + _mtime(TOKENS_PATH))}</style>", unsafe_allow_html=True)
 
 
 def apply_style() -> None:
@@ -1002,23 +1009,41 @@ def html(markup: str) -> None:
     st.markdown(markup, unsafe_allow_html=True)
 
 
-def page_header(title: str, intro: str | None = None, eyebrow: str | None = None) -> None:
-    """Eyebrow, title, introduction and, only for the interim model, a small notice."""
-    parts = []
-    if eyebrow:
-        parts.append(f'<div class="cl-eyebrow">{eyebrow}</div>')
-    parts.append(f'<h1 class="cl-page-title">{title}</h1>')
+def model_meta_line() -> str:
+    """Short right-hand line for page headers: model, training date, test size."""
+    meta = load_metadata()
+    name = str(meta.get("model_name", "Model"))
+    short = "LightGBM" if "lightgbm" in name.lower() else name.split("(")[0].strip()
+    bits = [f"<b>{short}</b>"]
+    if meta.get("trained_on"):
+        bits.append(f"trained {meta['trained_on']}")
+    if isinstance(meta.get("n_test"), int):
+        bits.append(f"{meta['n_test']:,} held-out loans")
+    bits.append(f"approve below {threshold():.1%}")
+    return " &middot; ".join(bits)
+
+
+def page_header(title: str, intro: str | None = None, eyebrow: str | None = None, meta: str | bool = True) -> None:
+    """Title row: title and one-line intro on the left, model line on the right.
+
+    ``meta`` is the right-hand text (default: the model line); False hides it.
+    ``eyebrow`` is accepted for compatibility and not shown.
+    """
+    left = f'<div><h1 class="cl-page-title">{title}</h1>'
     if intro:
-        parts.append(f'<div class="cl-page-intro">{intro}</div>')
+        left += f'<div class="cl-page-intro">{intro}</div>'
     if artefact_source()["is_dev"]:
-        parts.append(f'<div class="cl-devnote">{icon("info", 16, "#7A5A12")} Interim development model: '
-                     "final model files are not yet in models/, figures are for testing only</div>")
-    html("".join(parts))
+        left += '<div class="cl-devnote">Interim development model: figures are for testing only</div>'
+    left += "</div>"
+    right = ""
+    if meta:
+        right = f'<div class="cl-page-meta">{model_meta_line() if meta is True else meta}</div>'
+    html(f'<div class="cl-page-head">{left}{right}</div>')
 
 
 def section_title(text: str, icon_name: str | None = None) -> None:
-    ic = icon(icon_name, 22) if icon_name else ""
-    html(f'<div class="cl-section-title">{ic}<span>{text}</span></div>')
+    """Small uppercase section label with a rule. ``icon_name`` is accepted and ignored."""
+    html(f'<div class="cl-section-title"><span>{text}</span></div>')
 
 
 def page_link(page: str, label: str, icon: str | None = None) -> None:
@@ -1044,12 +1069,8 @@ def hex_rgba(colour: str, alpha: float) -> str:
 
 
 def chip(text: str, colour: str, solid: bool = False) -> str:
-    """Rounded label; soft background by default, solid for emphasis."""
-    if solid:
-        fg = LIGHT["INK"] if colour == COLOURS["amber"] else "#FFFFFF"
-        return f'<span class="cl-chip" style="background:{colour};color:{fg}">{text}</span>'
-    return (f'<span class="cl-chip" style="background:{hex_rgba(colour, 0.12)};color:{pal()["INK"]};'
-            f'border-color:{hex_rgba(colour, 0.35)}"><span class="sw" style="background:{colour}"></span>{text}</span>')
+    """Flat label: a coloured dot and text inside a hairline border. ``solid`` is accepted and ignored."""
+    return f'<span class="cl-chip"><span class="sw" style="background:{colour}"></span>{text}</span>'
 
 
 def pill(text: str, colour: str, dark_text: bool = False) -> str:
@@ -1057,12 +1078,10 @@ def pill(text: str, colour: str, dark_text: bool = False) -> str:
 
 
 def decision_chip(decision: str) -> str:
+    """Flat decision tag: coloured dot, uppercase text, border in the decision colour."""
     colour = DECISION_COLOURS[decision]
-    fg = LIGHT["INK"] if decision == "Refer" else "#FFFFFF"
-    glow = f"0 0 0 6px {hex_rgba(colour, 0.18)}, 0 10px 28px {hex_rgba(colour, 0.45)}"
-    mark = {"Approve": "check", "Refer": "clock", "Decline": "shield"}[decision]
-    return (f'<span class="cl-decision" style="background:{colour};color:{fg};box-shadow:{glow}">'
-            f'{icon(mark, 20, fg, 2.2)}{decision}</span>')
+    return (f'<span class="cl-decision" style="color:{colour};border-color:{hex_rgba(colour, 0.5)}">'
+            f'<i style="background:{colour}"></i>{decision}</span>')
 
 
 def how_tip(text: str) -> str:
@@ -1096,12 +1115,23 @@ def tiles(items: list[dict], cols: int = 4, min_width: int | None = None, compac
             attrs = ' class="cl-tile-value"'
         sub = f'<div class="cl-tile-sub">{it["sub"]}</div>' if it.get("sub") else ""
         tip = how_tip(it["help"]) if it.get("help") else ""
-        cells.append(f'<div class="cl-tile"><span class="cl-accent-bar" style="background:{accent}"></span>{tip}'
+        cells.append(f'<div class="cl-tile">{tip}'
                      f'<div class="cl-tile-label">{it["label"]}</div>'
                      f'<div{attrs}>{value}</div>{sub}</div>')
-    minimum = min_width or {1: 100, 2: 150, 3: 150, 4: 168, 5: 160}.get(cols, 160)
-    cls = "cl-tiles" + (" compact" if compact else "") + (" glass" if glass else "")
+    minimum = min_width or {1: 100, 2: 150, 3: 150, 4: 150, 5: 140}.get(cols, 140)
+    cls = "cl-tiles" + (" compact" if compact else "")
     html(f'<div class="{cls}" style="grid-template-columns:repeat(auto-fit,minmax({minimum}px,1fr))">{"".join(cells)}</div>')
+
+
+def table_html(columns: list[str], rows: list[list], numeric: set[int] | None = None, caption: str | None = None) -> str:
+    """Compact HTML table (class cl-table). ``numeric`` holds the right-aligned column indexes."""
+    numeric = numeric or set()
+    head = "".join(f'<th class="{"num" if i in numeric else ""}">{c}</th>' for i, c in enumerate(columns))
+    body = "".join("<tr>" + "".join(f'<td class="{"num" if i in numeric else ""}">{v}</td>' for i, v in enumerate(r)) + "</tr>"
+                   for r in rows)
+    cap = f'<div class="cl-tile-label" style="margin-bottom:6px">{caption}</div>' if caption else ""
+    return (f'{cap}<div class="cl-table-wrap"><table class="cl-table"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div>')
 
 
 def skeleton(height: int = 320, label: str = "Computing") -> str:
@@ -1122,58 +1152,13 @@ _RUNTIME_JS = """
   var w = window.parent, doc = w && w.document;
   if (!doc) return;
   if (w.__clRuntime) { w.__clRuntime.scan(); return; }
-  var root = doc.documentElement;
-  var reduce = w.matchMedia && w.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  root.classList.add('cl-js');
-  if (reduce) root.classList.add('cl-reduced');
-  var SEL = '.cl-tile, .cl-card, .cl-step, .cl-dcard, .cl-reveal';
-  function fmt(v, dec, pre, suf) {
-    return pre + v.toLocaleString('en-GB', {minimumFractionDigits: dec, maximumFractionDigits: dec}) + suf;
-  }
-  function count(el) {
-    if (el.getAttribute('data-done')) return;
-    el.setAttribute('data-done', '1');
-    var to = parseFloat(el.dataset.to), dec = parseInt(el.dataset.dec || '0', 10);
-    var pre = el.dataset.pre || '', suf = el.dataset.suf || '';
-    if (isNaN(to) || reduce) return;
-    var start = w.performance.now(), dur = 1100;
-    function step(now) {
-      var k = Math.min(1, (now - start) / dur), e = 1 - Math.pow(1 - k, 3);
-      el.textContent = fmt(to * e, dec, pre, suf);
-      if (k < 1) w.requestAnimationFrame(step); else el.textContent = fmt(to, dec, pre, suf);
-    }
-    w.requestAnimationFrame(step);
-  }
-  var io = ('IntersectionObserver' in w) ? new w.IntersectionObserver(function (entries) {
-    entries.forEach(function (en) {
-      if (!en.isIntersecting) return;
-      var el = en.target;
-      el.classList.add('cl-in');
-      el.querySelectorAll('.cl-countup').forEach(count);
-      if (el.classList.contains('cl-countup')) count(el);
-      io.unobserve(el);
-    });
-  }, {threshold: 0.08, rootMargin: '0px 0px -30px 0px'}) : null;
-  function scan() {
-    var els = doc.querySelectorAll(SEL);
-    els.forEach(function (el) {
-      if (el.__clSeen) return;
-      el.__clSeen = true;
-      if (!io) { el.classList.add('cl-in'); el.querySelectorAll('.cl-countup').forEach(count); return; }
-      var sib = el.parentElement ? Array.prototype.indexOf.call(el.parentElement.children, el) : 0;
-      el.style.setProperty('--cl-delay', Math.min(sib, 6) * 70 + 'ms');
-      el.classList.add('cl-rv');
-      io.observe(el);
-    });
-  }
   function expandNav() {
     var b = doc.querySelector('[data-testid="stSidebarNavViewButton"]');
     if (b && /more/i.test(b.innerText) && !b.__clDone) { b.__clDone = true; b.click(); }
   }
-  w.__clRuntime = {scan: function () { scan(); expandNav(); }};
+  w.__clRuntime = {scan: expandNav};
   expandNav();
-  scan();
-  new w.MutationObserver(function () { scan(); expandNav(); }).observe(doc.body, {childList: true, subtree: true});
+  new w.MutationObserver(expandNav).observe(doc.body, {childList: true, subtree: true});
 })();
 </script>
 """
@@ -1210,22 +1195,22 @@ def sidebar_status() -> None:
 # Plotly template shared by every chart
 def _axis() -> dict:
     return dict(showgrid=True, gridcolor=pal()["GRID"], zeroline=False, linecolor=pal()["BORDER"], ticks="", automargin=True,
-                tickfont=dict(color=pal()["MUTED"], size=12, family=FONT_STACK),
-                title=dict(font=dict(color=pal()["MUTED"], size=12, family=FONT_STACK), standoff=10))
+                tickfont=dict(color=pal()["MUTED"], size=11, family=FONT_STACK),
+                title=dict(font=dict(color=pal()["MUTED"], size=11, family=FONT_STACK), standoff=8))
 
 
 def plotly_template():
     import plotly.graph_objects as go
     return go.layout.Template(layout=dict(
-        font=dict(family=FONT_STACK, size=13, color=pal()["INK"]),
+        font=dict(family=FONT_STACK, size=12, color=pal()["INK"]),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        colorway=[COLOURS["teal"], COLOURS["navy"], COLOURS["amber"], COLOURS["red"], COLOURS["grey"]],
+        colorway=[COLOURS["navy"], COLOURS["teal"], COLOURS["amber"], COLOURS["red"], COLOURS["grey"], COLOURS["slate"]],
         xaxis=_axis(), yaxis=_axis(),
-        margin=dict(l=12, r=12, t=44, b=36),
-        title=dict(font=dict(size=15, color=pal()["INK"], family=FONT_STACK), x=0.01, xanchor="left", y=0.97),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=12, color=pal()["MUTED"]), bgcolor="rgba(0,0,0,0)"),
-        hoverlabel=dict(bgcolor=pal()["HOVER"], bordercolor=pal()["HOVER"], font=dict(color=pal()["HOVER_TEXT"], family=FONT_STACK, size=12), align="left"),
-        bargap=0.28,
+        margin=dict(l=10, r=10, t=36, b=30),
+        title=dict(font=dict(size=13, color=pal()["INK"], family=FONT_STACK), x=0.01, xanchor="left", y=0.97),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=11, color=pal()["MUTED"]), bgcolor="rgba(0,0,0,0)"),
+        hoverlabel=dict(bgcolor=pal()["HOVER"], bordercolor=pal()["HOVER"], font=dict(color=pal()["HOVER_TEXT"], family=FONT_STACK, size=11), align="left"),
+        bargap=0.32,
     ))
 
 
@@ -1239,18 +1224,18 @@ def chart(fig, height: int | None = None, key: str | None = None, on_select=None
     fig.update_layout(template=tpl)
     # Explicit values as well as the template: the front end fills unset layout keys with its own theme
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      font=dict(family=FONT_STACK, color=pal()["INK"], size=13),
+                      font=dict(family=FONT_STACK, color=pal()["INK"], size=12),
                       hoverlabel=dict(bgcolor=pal()["HOVER"], bordercolor=pal()["HOVER"], font=dict(color=pal()["HOVER_TEXT"], family=FONT_STACK, size=12), align="left"))
     for ax in ("xaxis", "yaxis"):
         current = getattr(fig.layout, ax)
         if current is not None and current.visible is not False:
             fig.update_layout({ax: dict(gridcolor=current.gridcolor or pal()["GRID"], linecolor=pal()["BORDER"], zerolinecolor=pal()["GRID"],
-                                        tickfont=dict(color=pal()["MUTED"], size=12, family=FONT_STACK))})
+                                        tickfont=dict(color=pal()["MUTED"], size=11, family=FONT_STACK))})
     if fig.layout.title.text:
-        top = fig.layout.margin.t if fig.layout.margin.t is not None else 44
-        fig.update_layout(title=dict(font=dict(size=15, color=pal()["INK"], family=FONT_STACK), x=0.01, xanchor="left",
-                                     yref="container", y=0.97, yanchor="top"),
-                          margin=dict(t=max(top, 78)))
+        top = fig.layout.margin.t if fig.layout.margin.t is not None else 36
+        fig.update_layout(title=dict(font=dict(size=13, color=pal()["INK"], family=FONT_STACK), x=0.01, xanchor="left",
+                                     yref="container", y=0.98, yanchor="top"),
+                          margin=dict(t=max(top, 64)))
         if fig.layout.legend.y is None:
             fig.update_layout(legend=dict(y=1.02, yanchor="bottom", x=0, xanchor="left"))
     if height:
@@ -1264,7 +1249,7 @@ def chart(fig, height: int | None = None, key: str | None = None, on_select=None
                            config={"displayModeBar": False, "responsive": True}, **kwargs)
 
 
-_LIGHT_ONLY = {"#FFFFFF", "#FFF", "WHITE", "#EEF2F7", "#F7F9FC"}
+_LIGHT_ONLY = {"#FFFFFF", "#FFF", "WHITE", "#EEF0F3", "#F4F5F7", "#EEF2F7", "#F7F9FC"}
 
 
 def _darken(fig) -> None:
@@ -1285,7 +1270,7 @@ def _darken(fig) -> None:
         line = getattr(tr, "line", None)
         if line is not None and isinstance(getattr(line, "color", None), str) and line.color.upper() in _LIGHT_ONLY:
             line.color = card
-        navy_dark = "#7FA6D6"
+        navy_dark = "#6FA3E6"
         if line is not None and isinstance(getattr(line, "color", None), str) and line.color.upper() == COLOURS["navy"].upper():
             line.color = navy_dark
         if marker is not None:
@@ -1322,7 +1307,7 @@ def gauge_figure(p: float, t: float, compact: bool = False):
         return np.append(xs, xs[0]), np.append(ys, ys[0])
 
     bx, by = arc(0, 1, 0.66, 1.0)
-    fig.add_trace(go.Scatter(x=bx, y=by, fill="toself", fillcolor="#EEF2F7", line=dict(width=0),
+    fig.add_trace(go.Scatter(x=bx, y=by, fill="toself", fillcolor="#EEF0F3", line=dict(width=0),
                              hoverinfo="skip", showlegend=False))
     for b in risk_bands():
         x, y = arc(b["min"], min(b["max"], 1.0), 0.70, 0.96)
@@ -1330,8 +1315,8 @@ def gauge_figure(p: float, t: float, compact: bool = False):
                                  hoverinfo="text", text=f"{b['name']}: {b['min']:.0%} to {b['max']:.0%}", showlegend=False))
     ang = np.pi * (1 - p)
     fig.add_trace(go.Scatter(x=[-0.05 * np.cos(ang), 0.86 * np.cos(ang)], y=[-0.05 * np.sin(ang), 0.86 * np.sin(ang)],
-                             mode="lines", line=dict(color=pal()["INK"], width=5), hoverinfo="skip", showlegend=False))
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", marker=dict(size=18, color=pal()["INK"], line=dict(color="#FFFFFF", width=3)),
+                             mode="lines", line=dict(color=pal()["INK"], width=3), hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", marker=dict(size=12, color=pal()["INK"], line=dict(color="#FFFFFF", width=2)),
                              hoverinfo="skip", showlegend=False))
     ta = np.pi * (1 - t)
     fig.add_trace(go.Scatter(x=[0.62 * np.cos(ta), 1.04 * np.cos(ta)], y=[0.62 * np.sin(ta), 1.04 * np.sin(ta)],
